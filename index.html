@@ -1,0 +1,1228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ant Colony</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#07050a;color:#d8cdb8;font:13px/1.4 system-ui,sans-serif}
+  #c{position:fixed;inset:0;width:100vw;height:100vh;image-rendering:pixelated;cursor:crosshair;touch-action:none}
+  #mini{position:fixed;top:10px;right:10px;width:min(26vw,340px);image-rendering:pixelated;background:#000;
+        border:1px solid #6a5a44;border-radius:3px;cursor:pointer;touch-action:none;box-shadow:0 2px 10px #0008}
+  #hud{position:fixed;left:0;right:0;bottom:0;padding:8px 14px 10px;display:flex;flex-direction:column;gap:6px;align-items:center;
+       background:linear-gradient(to top,rgba(14,10,7,.95),rgba(14,10,7,.84));border-top:1px solid #3a2d20;backdrop-filter:blur(3px)}
+  #hud.hidden{display:none}
+  #bar{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;justify-content:center}
+  #stats{display:flex;flex-wrap:wrap;gap:0 14px;justify-content:center;font-size:12px}
+  #stats span{white-space:nowrap}
+  b{color:#f2c94c;font-weight:600}
+  #roster{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
+  .card{display:flex;gap:8px;align-items:center;background:#201912cc;border:1px solid #3a2d20;border-radius:6px;padding:4px 10px;font-size:12px}
+  .card i{width:14px;height:14px;border-radius:2px;border:1px solid #8a8070;flex:none}
+  .card small{opacity:.65}
+  button{background:#2a2118;color:#d8cdb8;border:1px solid #4a3a2a;border-radius:4px;padding:3px 10px;cursor:pointer;font:inherit}
+  button:hover{background:#3a2d20}
+  button.on{background:#5a4430;border-color:#8a6a46}
+  label{display:flex;align-items:center;gap:6px}
+  input[type=range]{width:100px}
+  #hint{opacity:.55;font-size:11px}
+  #bShow{position:fixed;right:10px;bottom:10px;display:none;opacity:.85}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<canvas id="mini" width="320" height="90" title="click or drag to move the view"></canvas>
+<div id="hud">
+  <div id="roster"></div>
+  <div id="stats"></div>
+  <div id="bar">
+    <label>speed <input id="speed" type="range" min="0.25" max="8" step="0.25" value="1"></label>
+    <label>dig drive <input id="dig" type="range" min="0" max="1" step="0.05" value="0.5"></label>
+    <button id="bFog" class="on">fog (F)</button>
+    <button id="bPher">pheromones (P)</button>
+    <button id="bPause">pause (space)</button>
+    <button id="bAnts">+10 ants</button>
+    <button id="bSpiders" class="on">spiders (X)</button>
+    <button id="bSpawn">summon spider (S)</button>
+    <button id="bReset">reset (R)</button>
+    <button id="bFull">fullscreen (G)</button>
+    <button id="bHud">hide panel (H)</button>
+  </div>
+  <div id="hint">left-drag above ground: pour food &nbsp;·&nbsp; scroll: A / D, arrows, mouse wheel, right-drag, screen edges, or the minimap</div>
+</div>
+<button id="bShow">show panel (H)</button>
+
+<script>
+'use strict';
+// ───────────────────────── world ─────────────────────────
+const W = 640, H = 180;
+const AIR = 0, DIRT = 1, TUNNEL = 2, ROCK = 3;
+
+const grid    = new Uint8Array(W * H);   // terrain
+const food    = new Uint8Array(W * H);   // 1 = a food pixel sits here
+const toHome  = new Float32Array(W * H); // laid by ants leaving the nest
+const toFood  = new Float32Array(W * H); // laid by ants carrying food back
+const tint    = new Uint8Array(W * H);   // per-cell colour noise
+const surf    = new Int16Array(W);       // original ground height per column
+
+const NEST = { x: W >> 1, y: 0, r: 6 };
+
+// tuning knobs — the interesting part
+const MAXT    = 500;     // pheromone trail "length": strength fades with steps walked
+const EVAP    = 0.9975;  // pheromone decay per tick
+const CAP     = 3500;    // soft cap on total tunnel cells
+const MAXANTS = 400;
+const LIFE_MAX   = 6000; // ticks an ant can live at most (30 ticks = 1s at 1x)
+const EAT_GAIN   = 2000; // life gained by eating one food from the nest store
+const HUNGRY     = 1500; // below this an ant heads home to eat (if there's food)
+const EGG_COST   = 5;    // food the queen needs for one egg
+const RESERVE    = 3;    // food she leaves in the store for the workers to eat
+const LAY_CD     = 90;   // min ticks between eggs
+const HATCH      = 300;  // ticks an egg incubates in the nursery (10s at 1x)
+const MAX_LOOSE  = 3;    // eggs waiting to be carried before the queen pauses
+const LOAD       = 3;    // dirt pellets a digger carries per trip
+const MOUND_MAX  = 700;  // total mound pellets
+const MOUND_H    = 14;   // max mound height above ground
+const SIGHT   = 4;       // radius at which a forager notices food
+
+const vis = new Uint8Array(W * H);        // lit by an ant right now (recomputed every frame)
+const explored = new Uint8Array(W * H);   // ever seen
+const cfg = { spiders: true, fog: true, speed: 1, dig: 0.5, show: false, paused: false };
+
+let ants = [], stored = 0, delivered = 0, tunnelCells = 0, tick = 0;
+let born = 0, died = 0, moundCells = 0, exitDirty = true;
+let storeCells = [];                       // chamber cells that display the food store
+const exitDist = new Int16Array(W * H);    // tunnel steps to the nearest surface opening
+const nurseDist = new Int16Array(W * H);   // tunnel steps to the nursery chamber
+const nestDist = new Int16Array(W * H);    // tunnel steps to the nest centre
+const spiderDist = new Int16Array(W * H);  // tunnel steps to a spider that's underground
+const nurserySet = new Uint8Array(W * H);  // 1 = nursery floor
+let nurseryCells = [], slotTaken = new Uint8Array(0);  // egg slots (floor first)
+let eggs = [];
+const E_LOOSE = 0, E_CLAIMED = 1, E_CARRIED = 2, E_INCUB = 3;
+const QHOME = { x: 0, y: 0 };
+const SCOUT = 0, WORKER = 1, SOLDIER = 2;
+const TYPE_NAME = ['Scouts', 'Workers', 'Soldiers'];
+const TYPE_ROLE = ['find food, mark trails', 'forage · nurse · dig', 'guard the entrances'];
+const TYPE_SWATCH = ['#c85c1c', '#120c08', '#5c1814'];
+let project = null, chambers = 0;
+// spiders: occasional slow raiders from the map edges
+const SPIDER_SPEED = 0.35, SPIDER_HP = 12, SPIDER_LIFE = 4500, QUEEN_HP = 60;
+const spiderCap = () => ants.length >= 20 ? 2 : 1;   // a small colony only ever faces one at a time
+const QUEEN_MORTAL = true;                   // false = spiders can't hurt her
+let spiders = [], spiderTimer = 6000, spidersKilled = 0, lostToSpiders = 0, threat = 0, alarm = 0;   // alarm: ticks the colony stays alert after an ant sees a spider            // the room currently being dug out, rooms finished
+let marks = [];                              // known food piles: { x, y, path: pile→nest cells }
+const ENTR = [{ x: 0, y: 0 }, { x: 0, y: 0 }];            // the two surface openings
+const entrDist = [new Int16Array(W * H), new Int16Array(W * H)];
+const queen = { x: 0, y: 0, cd: 0 };
+const bfsQ = new Int32Array(W * H);
+
+const inb = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
+
+function setTunnel(x, y) {
+  const i = y * W + x;
+  if (grid[i] !== TUNNEL) { grid[i] = TUNNEL; tunnelCells++; exitDirty = true; }
+}
+
+function genWorld() {
+  grid.fill(AIR); food.fill(0); toHome.fill(0); toFood.fill(0);
+  tunnelCells = 0; stored = 20; delivered = 0; tick = 0; ants = []; eggs = []; marks = []; project = null; chambers = 0;
+  spiders = []; spiderTimer = 6000; spidersKilled = 0; lostToSpiders = 0; threat = 0; alarm = 0;
+  nurserySet.fill(0); explored.fill(0);
+  born = 0; died = 0; moundCells = 0;
+
+  const p1 = Math.random() * 6.28, p2 = Math.random() * 6.28;
+  for (let x = 0; x < W; x++) {
+    surf[x] = Math.round(44 + 3 * Math.sin(x * 0.035 + p1) + 2 * Math.sin(x * 0.11 + p2));
+    for (let y = surf[x]; y < H; y++) grid[y * W + x] = DIRT;
+  }
+  for (let i = 0; i < W * H; i++) tint[i] = (Math.random() * 4) | 0;
+
+  // rocks
+  for (let k = 0; k < (W / 320) * 45; k++) {
+    const cx = (Math.random() * W) | 0;
+    const cy = surf[cx] + 10 + ((Math.random() * (H - surf[cx] - 14)) | 0);
+    const rx = 1 + Math.random() * 4, ry = 1 + Math.random() * 3;
+    for (let y = Math.floor(cy - ry); y <= cy + ry; y++)
+      for (let x = Math.floor(cx - rx); x <= cx + rx; x++)
+        if (inb(x, y) && ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1) grid[y * W + x] = ROCK;
+  }
+
+  // nest: main shaft + chamber + side tunnel + second entrance
+  const nx = NEST.x, ny = surf[nx] + 20;
+  NEST.y = ny;
+  for (let y = surf[nx]; y <= ny; y++) setTunnel(nx, y);
+  for (let y = ny - 3; y <= ny + 3; y++)
+    for (let x = nx - 9; x <= nx + 9; x++)
+      if (((x - nx) / 9) ** 2 + ((y - ny) / 3.4) ** 2 <= 1) setTunnel(x, y);
+  const sx = nx - 46;
+  ENTR[0].x = nx; ENTR[0].y = surf[nx]; ENTR[1].x = sx; ENTR[1].y = surf[sx];
+  for (let x = sx; x <= nx - 8; x++) setTunnel(x, ny);
+  for (let y = surf[sx]; y <= ny; y++) setTunnel(sx, y);
+
+  // nursery: a second chamber off the right side of the nest, joined by a short tunnel
+  const nsx = nx + 22, nsy = ny + 2;
+  for (let x = nx + 8; x <= nx + 16; x++) setTunnel(x, ny + 1);
+  nurseryCells = [];
+  for (let y = nsy - 3; y <= nsy + 3; y++)
+    for (let x = nsx - 7; x <= nsx + 7; x++)
+      if (((x - nsx) / 7) ** 2 + ((y - nsy) / 3.2) ** 2 <= 1) {
+        setTunnel(x, y); nurserySet[y * W + x] = 1; nurseryCells.push(y * W + x);
+      }
+  nurseryCells.sort((a, b) => ((b / W) | 0) - ((a / W) | 0) || Math.abs(a % W - nsx) - Math.abs(b % W - nsx));
+  slotTaken = new Uint8Array(nurseryCells.length);
+
+  QHOME.x = queen.x = nx - 3; QHOME.y = queen.y = ny + 1; queen.cd = LAY_CD; queen.hp = QUEEN_HP; queen.dead = false;
+
+  // food store is drawn as pixels filling the chamber floor-first
+  storeCells = [];
+  for (let y = ny - 3; y <= ny + 3; y++)
+    for (let x = nx - 9; x <= nx + 9; x++)
+      if (x !== nx && ((x - nx) / 9) ** 2 + ((y - ny) / 3.4) ** 2 <= 1) storeCells.push(y * W + x);
+  storeCells.sort((a, b) => ((b / W) | 0) - ((a / W) | 0) || Math.abs(a % W - nx) - Math.abs(b % W - nx));
+
+  // you start with a view of the ground around the main entrance
+  for (let y = 0; y < H; y++) for (let x = Math.max(0, nx - 20); x <= Math.min(W - 1, nx + 20); x++)
+    if ((x - nx) ** 2 + (y - surf[nx]) ** 2 <= 400 && y <= surf[x] + 2) explored[y * W + x] = 1;
+
+  for (let n = 0; n < 8; n++) spawnAnt(3500 + Math.random() * 2500, undefined, undefined, pickType(8));   // the colony's best guess
+  computeExit();
+}
+
+// ───────────────────────── ants ─────────────────────────
+const FORAGE = 0, RETURN = 1, REST = 2, DIG = 3, TUNNELING = 4, DUMP = 5, FETCH = 6, CARRYEGG = 7,
+      EXPLORE = 8, BACKTRACK = 9, PATROL = 10, BUILD = 11, DEFEND = 12;
+
+function spawnAnt(life = 4000, x, y, type = WORKER) {
+  if (x === undefined) {
+    let tries = 0;
+    do {
+      x = NEST.x + ((Math.random() * 14 - 7) | 0);
+      y = NEST.y + ((Math.random() * 6 - 3) | 0);
+    } while (grid[y * W + x] !== TUNNEL && ++tries < 50);
+  }
+  const d = (Math.random() * 8) | 0;
+  ants.push({
+    x, y, px: -1, py: -1, dx: DX[d], dy: DY[d],
+    state: REST, timer: (Math.random() * 120) | 0,
+    carry: false, stepsHome: 0, stepsFood: 0,
+    tun: 0, hx: 0, hy: 1, load: 0, egg: null,
+    type, post: 0, mark: null, pi: -2, pfail: 0, trail: null, tmap: null,
+    face: 1, vert: false, vface: 1, tcell: -1, build: false, lost: 0, tgx: 0, tgy: 0,
+    life,                                  // ticks left to live
+    dil: 0.3 + Math.random() * 1.4,        // each ant's own appetite for digging
+  });
+}
+
+const DX  = [1, 1, 0, -1, -1, -1, 0, 1];
+const DY  = [0, 1, 1, 1, 0, -1, -1, -1];
+const LEN = [1, 1.414, 1, 1.414, 1, 1.414, 1, 1.414];
+const wts = new Float32Array(8);
+
+// Can an ant stand here?  Tunnels always; open air only if it's touching ground/rock/food
+// (so ants crawl along the surface and up cliffs but don't walk through the sky).
+function walkable(x, y) {
+  if (x < 0 || y < 0 || x >= W || y >= H) return false;
+  const t = grid[y * W + x];
+  if (t === TUNNEL) return true;
+  if (t !== AIR) return false;
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+    if (!i && !j) continue;
+    const xx = x + i, yy = y + j;
+    if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue;
+    const k = yy * W + xx;
+    if (grid[k] === DIRT || grid[k] === ROCK || food[k]) return true;
+  }
+  return false;
+}
+const solid = (x, y) => !inb(x, y) || grid[y * W + x] === DIRT || grid[y * W + x] === ROCK;
+
+// Pick a neighbour cell by weighted roulette.
+//  phero:    pheromone field to climb (or null)
+//  nestBias: pull toward the nest
+//  vBias:    >0 prefers up, <0 prefers down
+//  tx,ty:    a visible food target (or -1)
+function chooseMove(a, phero, nestBias, vBias, tx, ty, mom = 1, ax = 0, ay = 0, ar2 = 0) {
+  const ll = Math.hypot(a.dx, a.dy) || 1;
+  let nvx = 0, nvy = 0;
+  if (nestBias) {
+    nvx = NEST.x - a.x; nvy = NEST.y - a.y;
+    const n = Math.hypot(nvx, nvy) || 1; nvx /= n; nvy /= n;
+  }
+  let fvx = 0, fvy = 0;
+  if (tx >= 0) {
+    fvx = tx - a.x; fvy = ty - a.y;
+    const n = Math.hypot(fvx, fvy) || 1; fvx /= n; fvy /= n;
+  }
+  let sum = 0;
+  for (let d = 0; d < 8; d++) {
+    const nx = a.x + DX[d], ny = a.y + DY[d];
+    let w = 0;
+    if (walkable(nx, ny) && (d % 2 === 0 || !(solid(a.x + DX[d], a.y) && solid(a.x, a.y + DY[d])))) {
+      const ux = DX[d] / LEN[d], uy = DY[d] / LEN[d];
+      w = 0.2 + mom * Math.max(0, (ux * a.dx + uy * a.dy) / ll);   // momentum
+      if (nx === a.px && ny === a.py) w *= 0.08;                  // don't dither backwards
+      if (phero) w *= 1 + phero[ny * W + nx] * 20;
+      if (nestBias) w *= 1 + nestBias * Math.max(0, ux * nvx + uy * nvy);
+      if (tx >= 0) w *= 1 + 5 * Math.max(0, ux * fvx + uy * fvy);
+      if (vBias) w *= Math.max(0.1, 1 - vBias * uy);
+      if (ar2 && (nx - ax) ** 2 + (ny - ay) ** 2 > ar2) w = 0;     // stay inside the patrol zone
+    }
+    wts[d] = w; sum += w;
+  }
+  if (sum <= 0) return false;
+  let r = Math.random() * sum, d = 0;
+  while (d < 7 && (r -= wts[d]) > 0) d++;
+  moveTo(a, a.x + DX[d], a.y + DY[d]);
+  return true;
+}
+
+function moveTo(a, x, y) {
+  a.dx = x - a.x; a.dy = y - a.y;
+  if (a.dx) a.face = a.dx > 0 ? 1 : -1;
+  if (a.dy && !a.dx) { a.vert = true; a.vface = a.dy > 0 ? 1 : -1; }   // moving straight up/down: stand upright
+  else if (a.dx && !a.dy) a.vert = false;
+  a.px = a.x; a.py = a.y; a.x = x; a.y = y;
+}
+
+function layTrail(field, i, steps) {
+  if (steps < MAXT) { const s = 1 - steps / MAXT; if (s > field[i]) field[i] = s; }
+}
+
+const eligibleDig = (x, y) =>
+  x >= 2 && x < W - 2 && y < H - 3 && y >= surf[x] + 6 && grid[y * W + x] === DIRT;
+
+function stepAnt(a) {
+  const i = a.y * W + a.x;
+  if (spiders.length) {
+    if (a.type === SOLDIER) {                 // once the alarm is up, the whole guard turns out
+      if (alarm > 0 && (a.state === PATROL || a.state === REST || a.state === RETURN)) a.state = DEFEND;
+    } else if (a.state === FORAGE || a.state === EXPLORE || a.state === DIG || a.state === TUNNELING || a.state === BUILD) {
+      const sp = nearestSpider(a);            // everyone else bolts for home when one gets close
+      if (sp && (sp.x - a.x) ** 2 + (sp.y - a.y) ** 2 <= (a.y <= surf[a.x] ? 64 : 25)) {
+        a.state = a.state === EXPLORE ? BACKTRACK : RETURN; a.load = 0; a.build = false; a.tcell = -1;
+      }
+    }
+  }
+  if (a.life < HUNGRY && stored > 0 && (a.state === FORAGE || a.state === DIG || a.state === TUNNELING ||
+                                        a.state === EXPLORE || a.state === PATROL || a.state === BUILD)) {
+    a.state = a.state === EXPLORE ? BACKTRACK : RETURN; a.load = 0;   // starving: go home and eat
+    a.build = false; a.tcell = -1;
+  }
+  switch (a.state) {
+
+    case FORAGE: {
+      layTrail(toHome, i, a.stepsHome++);
+      if (food[i]) {                         // found some — pick it up and turn around
+        food[i] = 0; a.carry = true; a.state = RETURN; a.stepsFood = 0;
+        a.pi = -2; a.lost = 0;                 // carry it home along the scout's trail if we're near it
+        if (a.mark) {
+          const path = a.mark.path; let bj = -1, bd2 = 64;
+          for (let j = 0; j < Math.min(path.length, 60); j++) {
+            const d = (path[j] % W - a.x) ** 2 + ((path[j] / W | 0) - a.y) ** 2;
+            if (d < bd2) { bd2 = d; bj = j; }
+          }
+          if (bj >= 0) a.pi = bj;
+        }
+        a.dx = -a.dx; a.dy = -a.dy; a.px = -1; return;
+      }
+      // anything edible in sight?
+      let bx = -1, by = -1, bd = 1e9;
+      for (let y = a.y - SIGHT; y <= a.y + SIGHT; y++) for (let x = a.x - SIGHT; x <= a.x + SIGHT; x++) {
+        if (inb(x, y) && food[y * W + x]) {
+          const d = (x - a.x) ** 2 + (y - a.y) ** 2;
+          if (d < bd) { bd = d; bx = x; by = y; }
+        }
+      }
+      let tx = bx, ty = by;
+      if (bx < 0 && a.mark && a.pi !== -2) {   // tracking a scout's mark
+        const path = a.mark.path, L = path.length;
+        if (a.pi === -1) {                     // not on the trail yet: go to where the scout set off
+          const c = path[L - 1];
+          tx = c % W; ty = (c / W) | 0;
+          if (Math.abs(a.x - tx) <= 1 && Math.abs(a.y - ty) <= 1) a.pi = L;   // close enough: hop on
+        }
+        if (a.pi === 0) a.pi = -2;             // reached the pile end: sight takes over
+        else if (a.pi > 0) {
+          if (trackPath(a, path, -1)) { if (--a.timer <= 0) a.state = RETURN; return; }
+          tx = a.tgx; ty = a.tgy;              // slipped off the trail: steer back toward it
+        }
+      }
+      const underground = a.y > surf[a.x] + 1;
+      chooseMove(a, toFood, 0, underground ? 0.7 : 0, tx, ty);
+      if (!marks.length && a.timer > 150) a.timer = 150;   // nothing marked any more: stop searching
+      if (--a.timer <= 0) a.state = RETURN;   // gave up, go home
+      break;
+    }
+
+    case RETURN: {
+      if (a.carry) layTrail(toFood, i, a.stepsFood++);
+      const dx = a.x - NEST.x, dy = a.y - NEST.y;
+      if (dx * dx + dy * dy <= NEST.r * NEST.r && grid[i] === TUNNEL) {
+        if (a.carry) {
+          a.carry = false; delivered++;
+          if (stored < storeCells.length) stored++;
+        }
+        a.stepsHome = 0; a.state = REST; a.timer = 40 + ((Math.random() * 200) | 0);
+        return;
+      }
+      let rx = -1, ry = -1;
+      if (a.carry && a.mark && a.pi >= 0) {      // retrace the scout's trail toward the nest
+        if (a.pi >= a.mark.path.length - 1) a.pi = -2;
+        else if (trackPath(a, a.mark.path, 1)) break;
+        else { rx = a.tgx; ry = a.tgy; }
+      }
+      chooseMove(a, toHome, 1.5, 0, rx, ry);
+      break;
+    }
+
+    case REST: {
+      if (stored > 0 && a.life <= LIFE_MAX - EAT_GAIN) { stored--; a.life += EAT_GAIN; }
+      if (a.type === WORKER && a.life > HUNGRY && Math.random() < 0.15 && claimEgg(a)) return;   // nurse duty comes first
+      if (Math.random() < 0.15) {               // shuffle about inside the nest
+        const d = (Math.random() * 8) | 0, nx = a.x + DX[d], ny = a.y + DY[d];
+        if (walkable(nx, ny) && (nx - NEST.x) ** 2 + (ny - NEST.y) ** 2 <= 100) moveTo(a, nx, ny);
+      }
+      if (--a.timer <= 0) {
+        if (a.type === SCOUT) {
+          if (!marks.length || Math.random() < 0.3) {          // nothing known (or feeling curious): go look
+            a.state = EXPLORE; a.timer = 800 + ((Math.random() * 600) | 0);
+            a.trail = [i]; a.tmap = new Map([[i, 0]]); a.hx = Math.random() < 0.5 ? -1 : 1;
+          } else a.timer = 150 + ((Math.random() * 250) | 0);
+        } else if (a.type === SOLDIER) {
+          a.state = PATROL; a.post = pickPost(); a.timer = 3000 + ((Math.random() * 2000) | 0);
+        } else {
+          const wantFood = marks.length > 0 && stored < storeCells.length * 0.9;
+          const p = cfg.dig * (0.5 + a.dil) * Math.max(0, 1 - tunnelCells / CAP);   // nothing else to do: dig
+          if (wantFood && Math.random() < 0.75) {
+            a.state = FORAGE; a.timer = 700 + ((Math.random() * 900) | 0); a.stepsHome = 0;
+            a.mark = marks[(Math.random() * marks.length) | 0]; a.pi = -1; a.pfail = 0;
+          } else if (Math.random() < p) {
+            if (project && Math.random() < 0.7 && ants.reduce((n, o) => n + (o.state === BUILD), 0) < 5) { a.state = BUILD; a.build = true; a.timer = 700; a.tcell = -1; a.stepsHome = 0; }
+            else { a.state = DIG; a.timer = 500; }
+          }
+          else a.timer = 100 + ((Math.random() * 200) | 0);     // nothing to do: loiter
+        }
+      }
+      break;
+    }
+
+    case EXPLORE: {                             // scout: roam the surface for food
+      trailStep(a);
+      let bx = -1, by = -1, bd = 1e9;
+      for (let y = a.y - 7; y <= a.y + 7; y++) for (let x = a.x - 7; x <= a.x + 7; x++) {
+        if (inb(x, y) && food[y * W + x]) {
+          const d = (x - a.x) ** 2 + (y - a.y) ** 2;
+          if (d < bd && !knownNear(x, y)) { bd = d; bx = x; by = y; }
+        }
+      }
+      if (bx >= 0 && bd <= 9) { markFood(a, bx, by); a.state = BACKTRACK; return; }
+      if (--a.timer <= 0) { a.state = BACKTRACK; return; }
+      if (grid[i] === TUNNEL && a.y > surf[a.x] && descend(a, exitDist)) break;   // find the way out
+      if (exitDist[i] === 0 && grid[i] === TUNNEL) { a.dx = a.hx; a.dy = 0; a.px = -1; }   // out: pick a direction
+      chooseMove(a, null, 0, 0.6, bx, by, 3);
+      break;
+    }
+
+    case BACKTRACK: {                           // scout: retrace its own path home
+      const tr = a.trail;
+      if (!tr || tr.length <= 1) { a.trail = a.tmap = null; a.state = RETURN; return; }
+      tr.pop();
+      const j = tr[tr.length - 1], nx = j % W, ny = (j / W) | 0;
+      if (Math.abs(nx - a.x) <= 1 && Math.abs(ny - a.y) <= 1 && walkable(nx, ny)) moveTo(a, nx, ny);
+      else { a.trail = a.tmap = null; a.state = RETURN; }
+      break;
+    }
+
+    case PATROL: {                              // soldier: stand guard around an entrance
+      const E = ENTR[a.post], dist = entrDist[a.post];
+      if (grid[i] === TUNNEL && dist[i] > 0 && descend(a, dist)) { a.timer--; break; }
+      if (--a.timer <= 0) { a.state = RETURN; return; }
+      chooseMove(a, null, 0, 0, -1, -1, 1, E.x, E.y, 64);
+      break;
+    }
+
+    case DIG: {                                 // wander the tunnels looking for a wall worth digging
+      layTrail(toHome, i, a.stepsHome++);
+      if (--a.timer <= 0) { a.state = RETURN; return; }
+      if (Math.random() < 0.2) {
+        const c = [];
+        for (const d of [0, 2, 4]) {            // right, down, left (never up)
+          if (eligibleDig(a.x + DX[d], a.y + DY[d])) c.push(d);
+        }
+        if (c.length) {
+          const d = c[(Math.random() * c.length) | 0];
+          a.hx = DX[d]; a.hy = DY[d]; a.tun = 12 + ((Math.random() * 40) | 0);
+          a.state = TUNNELING; return;
+        }
+      }
+      chooseMove(a, null, 0, -0.6, -1, -1);
+      break;
+    }
+
+    case TUNNELING: {
+      layTrail(toHome, i, a.stepsHome++);
+      if (a.tun <= 0) { endDig(a, true); return; }
+      if (Math.random() < 0.25) pickHeading(a);
+      const x = a.x + a.hx, y = a.y + a.hy;
+      if (eligibleDig(x, y)) {
+        setTunnel(x, y); moveTo(a, x, y); a.tun--;
+        if (++a.load >= LOAD) {
+          a.state = DUMP;
+          if (!project && Math.random() < 0.12 && tunnelCells < CAP * 0.9) startProject(a);   // maybe widen this into a room
+        }
+      }
+      else if (inb(x, y) && grid[y * W + x] === TUNNEL) { moveTo(a, x, y); endDig(a); }
+      else { pickHeading(a); a.tun -= 3; }
+      break;
+    }
+
+    case DUMP: {                                // haul dirt up to the nearest opening
+      if (exitDist[i] === 0) {
+        for (let n = 0; n < a.load; n++)
+          dropPellet(a.x + (Math.random() < 0.5 ? -1 : 1) * (2 + ((Math.random() * 4) | 0)));
+        a.load = 0; a.state = (a.build && project && a.life > HUNGRY) ? BUILD : RETURN;   // back to the room, if still digging it
+        if (a.state === RETURN) a.build = false;
+        return;
+      }
+      if (!descend(a, exitDist)) { a.load = 0; a.state = RETURN; a.build = false; }
+      break;
+    }
+
+    case BUILD: {                               // worker: help dig out the new room
+      const P = project;
+      if (!P) { a.build = false; a.tcell = -1; a.state = RETURN; return; }
+      layTrail(toHome, i, a.stepsHome++);
+      if (--a.timer <= 0) {                    // gave up; a cell nobody can reach gets written off after two tries
+        if (a.tcell >= 0) P.skip.set(a.tcell, (P.skip.get(a.tcell) || 0) + 1);
+        a.build = false; a.tcell = -1; a.state = RETURN; return;
+      }
+      if (a.tcell < 0) {
+        a.tcell = claimCell(P, a);
+        if (a.tcell < 0) { a.build = false; a.state = RETURN; return; }   // nothing free right now: go do something else
+      }
+      const t = a.tcell, tx = t % W, ty = (t / W) | 0;
+      if (grid[t] !== DIRT) { a.tcell = -1; break; }
+      if (Math.abs(a.x - tx) + Math.abs(a.y - ty) === 1) {                // next to it: dig
+        setTunnel(tx, ty); P.left--; P.dirty = true; a.tcell = -1;
+        if (++a.load >= LOAD) a.state = DUMP;
+        break;
+      }
+      if (P.dist[i] > 8 && grid[i] === TUNNEL && descend(a, P.dist)) break;   // travel to the site
+      chooseMove(a, null, 0, 0, tx, ty);
+      break;
+    }
+
+    case DEFEND: {                              // soldier: run the spider down
+      const sp = nearestSpider(a);
+      if (!sp || alarm <= 0) { a.state = RETURN; return; }          // all clear
+      const under = grid[i] === TUNNEL && a.y > surf[a.x];
+      const spiderUnder = grid[sp.y * W + sp.x] === TUNNEL && sp.y > surf[sp.x];
+      if (under && !spiderUnder) {             // it's outside: head up the nearer shaft
+        const k = Math.abs(ENTR[0].x - sp.x) <= Math.abs(ENTR[1].x - sp.x) ? 0 : 1;
+        if (descend(a, entrDist[k])) break;
+      }
+      else if (under && spiderUnder && descend(a, spiderDist)) break;                 // both below: follow the tunnels to it
+      chooseMove(a, null, 0, 0, sp.x, sp.y, 1);
+      break;
+    }
+
+    case FETCH: {                               // walk to the queen's egg and pick it up
+      const e = a.egg;
+      if (Math.abs(a.x - e.x) <= 1 && Math.abs(a.y - e.y) <= 1) { e.st = E_CARRIED; a.state = CARRYEGG; return; }
+      chooseMove(a, null, 0, 0, e.x, e.y);
+      break;
+    }
+
+    case CARRYEGG: {                            // carry it to the nursery and set it down
+      const e = a.egg;
+      e.x = a.x; e.y = a.y;
+      if (nurserySet[i]) {
+        const sc = nurseryCells[e.slot], sx = sc % W, sy = (sc / W) | 0;
+        if (Math.abs(a.x - sx) <= 1 && Math.abs(a.y - sy) <= 1) {
+          e.x = sx; e.y = sy; e.st = E_INCUB; e.timer = HATCH;     // hatch timer starts now
+          a.egg = null; a.state = RETURN; return;
+        }
+        chooseMove(a, null, 0, 0, sx, sy);
+      } else if (!descend(a, nurseDist)) {
+        dropEgg(a); a.state = RETURN;
+      }
+      break;
+    }
+  }
+}
+
+function endDig(a, natural) {
+  if (natural && !project && Math.random() < 0.7 && tunnelCells < CAP * 0.9) startProject(a);
+  a.state = a.load > 0 ? DUMP : RETURN;
+}
+
+function pickHeading(a) {
+  const r = Math.random();
+  if (r < 0.5) { a.hx = 0; a.hy = 1; }
+  else if (r < 0.75) { a.hx = -1; a.hy = 0; }
+  else { a.hx = 1; a.hy = 0; }
+}
+
+// ───────────────────────── exits & mounds ─────────────────────────
+function bfs(dist, srcs) {
+  dist.fill(9999);
+  let qh = 0, qt = 0;
+  for (const i of srcs) { dist[i] = 0; bfsQ[qt++] = i; }
+  while (qh < qt) {
+    const i = bfsQ[qh++], x = i % W, y = (i / W) | 0, nd = dist[i] + 1;
+    for (let d = 0; d < 8; d++) {
+      const nx = x + DX[d], ny = y + DY[d];
+      if (!inb(nx, ny)) continue;
+      const j = ny * W + nx;
+      if (grid[j] !== TUNNEL || dist[j] <= nd) continue;
+      if (d % 2 && solid(x + DX[d], y) && solid(x, y + DY[d])) continue;
+      dist[j] = nd; bfsQ[qt++] = j;
+    }
+  }
+}
+
+function computeExit() {
+  const srcs = [];
+  for (let x = 0; x < W; x++) for (let y = Math.max(0, surf[x] - 1); y <= surf[x]; y++)
+    if (grid[y * W + x] === TUNNEL) srcs.push(y * W + x);
+  bfs(exitDist, srcs);
+  bfs(nurseDist, nurseryCells);
+  bfs(nestDist, [NEST.y * W + NEST.x]);
+  for (let k = 0; k < 2; k++) bfs(entrDist[k], [ENTR[k].y * W + ENTR[k].x]);
+  exitDirty = false;
+}
+
+// Step to the neighbouring tunnel cell closest to a BFS target; false if there's no way.
+function descend(a, dist) {
+  let best = -1, bv = 1e9;
+  for (let d = 0; d < 8; d++) {
+    const nx = a.x + DX[d], ny = a.y + DY[d];
+    if (!inb(nx, ny) || grid[ny * W + nx] !== TUNNEL) continue;
+    if (d % 2 && solid(a.x + DX[d], a.y) && solid(a.x, a.y + DY[d])) continue;
+    const v = dist[ny * W + nx] + Math.random() * 0.6;
+    if (v < bv) { bv = v; best = d; }
+  }
+  if (best < 0 || bv >= 9999) return false;
+  moveTo(a, a.x + DX[best], a.y + DY[best]);
+  return true;
+}
+
+// ───────────────────────── following a scout's trail ─────────────────────────
+// Step to the farthest of the next few trail cells (in direction dir: -1 toward the pile, +1 toward the nest)
+// that is within one step of us — so being a little off the trail, or cutting a corner, is fine.
+function followPath(a, path, dir) {
+  const L = path.length;
+  for (let k = 4; k >= 1; k--) {
+    const j = a.pi + dir * k;
+    if (j < 0 || j >= L) continue;
+    const c = path[j], nx = c % W, ny = (c / W) | 0;
+    if (Math.abs(nx - a.x) <= 1 && Math.abs(ny - a.y) <= 1 && (nx !== a.x || ny !== a.y) && walkable(nx, ny)) {
+      moveTo(a, nx, ny); a.pi = j; return true;
+    }
+  }
+  return false;
+}
+// If we can't step onto it, aim at a trail cell a little further along (a.tgx/tgy) and give up after a while.
+function trackPath(a, path, dir) {
+  if (followPath(a, path, dir)) { a.lost = 0; return true; }
+  const j = Math.max(0, Math.min(path.length - 1, a.pi + dir * 3)), c = path[j];
+  a.tgx = c % W; a.tgy = (c / W) | 0;
+  if (++a.lost > 40) a.pi = -2;                  // can't get back on it: fall back to scent
+  return false;
+}
+
+// ───────────────────────── fog of war ─────────────────────────
+// Above ground an ant lights a circle (slice of sky + the top of the ground).
+// Underground it lights the open tunnel cells nearby plus a RIM-cell margin of dirt around each of them.
+const RIM = 2;
+const stamped = new Uint32Array(W * H);   // which tunnel cells already lit their rim this pass
+let pass = 0;                              // bumped once per batch of reveals (a frame, or a few ticks)
+function revealAt(x0, y0, rAbove, rUnder, setVis) {
+  const under = grid[y0 * W + x0] === TUNNEL && y0 > surf[x0];
+  const r = under ? rUnder : rAbove, r2 = r * r + 1;
+  for (let y = Math.max(0, y0 - r); y <= Math.min(H - 1, y0 + r); y++)
+    for (let x = Math.max(0, x0 - r); x <= Math.min(W - 1, x0 + r); x++) {
+      if ((x - x0) ** 2 + (y - y0) ** 2 > r2) continue;
+      if (under) {
+        const c = y * W + x;
+        if (grid[c] !== TUNNEL || stamped[c] === pass) continue;   // many ants share the same cells
+        stamped[c] = pass;
+        for (let yy = Math.max(0, y - RIM); yy <= Math.min(H - 1, y + RIM); yy++)
+          for (let xx = Math.max(0, x - RIM); xx <= Math.min(W - 1, x + RIM); xx++) {
+            explored[yy * W + xx] = 1; if (setVis) vis[yy * W + xx] = 1;
+          }
+      } else if (y <= surf[x] + 2) {
+        explored[y * W + x] = 1; if (setVis) vis[y * W + x] = 1;
+      }
+    }
+}
+const revealAnt = (a, setVis) => revealAt(a.x, a.y, a.type === SCOUT ? 12 : a.type === SOLDIER ? 7 : 5, 4, setVis);
+const revealQueen = setVis => revealAt(queen.x, queen.y, 5, 5, setVis);
+function revealCircle(x0, y0, r) {            // temporary light only — never marks anything explored
+  for (let y = Math.max(0, y0 - r); y <= Math.min(H - 1, y0 + r); y++)
+    for (let x = Math.max(0, x0 - r); x <= Math.min(W - 1, x0 + r); x++)
+      if ((x - x0) ** 2 + (y - y0) ** 2 <= r * r) vis[y * W + x] = 1;
+}
+
+// ───────────────────────── room projects ─────────────────────────
+// A finished tunnel can spawn a project: an ellipse of dirt beyond its tip that workers dig out together.
+function startProject(a) {
+  const rx = 5 + ((Math.random() * 3) | 0), ry = 2 + ((Math.random() * 2) | 0);
+  const cx = a.x + a.hx * Math.round(rx * 0.7), cy = a.y + a.hy * Math.round(ry * 0.7);
+  const cells = [];
+  for (let y = cy - ry; y <= cy + ry; y++) for (let x = cx - rx; x <= cx + rx; x++)
+    if (((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1 && eligibleDig(x, y)) cells.push(y * W + x);
+  if (cells.length < 8) return;
+  const d2 = c => (c % W - a.x) ** 2 + ((c / W | 0) - a.y) ** 2;
+  cells.sort((p, q) => d2(p) - d2(q));                         // open it up outward from the tunnel tip
+  project = { cells, claims: new Map(), skip: new Map(), tip: a.y * W + a.x, cx, cy, dist: new Int16Array(W * H),
+              dirty: true, first: 0, left: cells.length, t0: tick };
+}
+
+// Give a digger the nearest undug cell that touches open tunnel (so it's reachable) and nobody else is on.
+function claimCell(P, a) {
+  let busy = false;
+  for (let k = P.first; k < P.cells.length; k++) {
+    const c = P.cells[k];
+    if (grid[c] !== DIRT) { if (k === P.first) P.first++; continue; }
+    if ((P.skip.get(c) || 0) >= 2) continue;
+    const o = P.claims.get(c);
+    if (o && o !== a && o.tcell === c && o.state === BUILD && o.life > 0) { busy = true; continue; }
+    const open = n => grid[n] === TUNNEL && P.dist[n] < 9999;      // open AND connected to the dig site
+    if (open(c - 1) || open(c + 1) || open(c - W) || open(c + W)) { P.claims.set(c, a); return c; }
+  }
+  if (!busy) finishProject(P);
+  return -1;
+}
+
+// The finished room becomes extra food storage.
+function finishProject(P) {
+  const room = P.cells.filter(c => grid[c] === TUNNEL);
+  room.sort((p, q) => ((q / W) | 0) - ((p / W) | 0) || Math.abs(p % W - P.cx) - Math.abs(q % W - P.cx));
+  for (const c of room) storeCells.push(c);
+  chambers++; project = null;
+}
+
+// ───────────────────────── spiders ─────────────────────────
+function nearestSpider(a) {
+  let best = null, bd = 1e9;
+  for (const sp of spiders) { const d = (sp.x - a.x) ** 2 + (sp.y - a.y) ** 2; if (d < bd) { bd = d; best = sp; } }
+  return best;
+}
+function spawnSpider() {
+  const left = Math.random() < 0.5, x = left ? 2 : W - 3;
+  spiders.push({ x, y: surf[x] - 1, px: -1, py: -1, dx: left ? 1 : -1, dy: 0, face: left ? 1 : -1, vert: false, vface: 1,
+                 hp: SPIDER_HP, mv: 0, cd: 60, life: SPIDER_LIFE, hit: 0 });
+  threat = 1;                                 // the colony will breed more soldiers for a while
+}
+function spiderTick(sp) {
+  if (--sp.life <= 0) return false;           // loses interest and wanders off
+  if (sp.cd > 0) sp.cd--;
+  if (sp.hit > 0) sp.hit--;
+  // soldiers within reach hurt it
+  let n = 0;                                   // soldiers hit hard; workers and scouts swarm it for a little
+  for (const a of ants) if (Math.abs(a.x - sp.x) <= 2 && Math.abs(a.y - sp.y) <= 2) n += a.type === SOLDIER ? 1 : 0.25;
+  if (n && Math.random() < n * 0.15) { sp.hp--; sp.hit = 4; }
+  if (sp.hp <= 0) { spidersKilled++; return false; }
+  // bite: the nearest ant within two cells, or the queen
+  if (sp.cd <= 0) {
+    let victim = null, bd = 6;
+    for (const a of ants) { const d = (a.x - sp.x) ** 2 + (a.y - sp.y) ** 2; if (d < bd && a.life > 0) { bd = d; victim = a; } }
+    if (victim) {
+      sp.cd = 60;
+      if (victim.type !== SOLDIER || Math.random() < 0.3) { victim.life = 0; lostToSpiders++; }
+    } else if (QUEEN_MORTAL && !queen.dead && Math.abs(queen.x - 0.5 - sp.x) <= 4 && Math.abs(queen.y - sp.y) <= 2) {
+      sp.cd = 60; queen.hp -= 4;
+      if (queen.hp <= 0) queen.dead = true;
+    }
+  }
+  // move: slowly
+  sp.mv += SPIDER_SPEED;
+  while (sp.mv >= 1) { sp.mv--; spiderStep(sp); }
+  return true;
+}
+function spiderStep(sp) {
+  let near = null, bd = 1e9;
+  for (const a of ants) { const d = (a.x - sp.x) ** 2 + (a.y - sp.y) ** 2; if (d < bd) { bd = d; near = a; } }
+  const i = sp.y * W + sp.x, inTunnel = grid[i] === TUNNEL;
+  if (near && bd <= (inTunnel ? 144 : 900)) {                 // something to hunt in sight: go for it
+    if (inTunnel && descend(sp, nestDist) && bd > 25) return;
+    chooseMove(sp, null, 0, 0, near.x, near.y, 2); return;
+  }
+  if (inTunnel) { if (!descend(sp, nestDist)) chooseMove(sp, null, 0, 0, NEST.x, NEST.y, 2); return; }   // inside: toward the nest
+  const e = Math.abs(ENTR[0].x - sp.x) <= Math.abs(ENTR[1].x - sp.x) ? ENTR[0] : ENTR[1];                 // outside: toward the nearest entrance
+  chooseMove(sp, null, 0, 0, e.x, e.y, 2);
+}
+
+// ───────────────────────── colony planning ─────────────────────────
+// How many of each type the colony wants for a population of T: [scouts, workers, soldiers]
+function targets(T) {
+  const known = marks.length > 0;           // once food is marked, fewer scouts are needed
+  const sc = Math.min(6, Math.max(known ? 1 : 2, Math.round(T * (known ? 0.12 : 0.25))));
+  const so = Math.min(12, Math.max(2, Math.round(T * (0.15 + 0.25 * Math.min(1, threat)))));   // more guards while spiders are about
+  return [sc, Math.max(0, T - sc - so), so];
+}
+function typeCounts() {
+  const c = [0, 0, 0], pending = [0, 0, 0];
+  for (const a of ants) c[a.type]++;
+  for (const e of eggs) pending[e.type]++;
+  return { c, pending };
+}
+// The type the colony is most short of, counting eggs already on the way.
+function pickType(Tfixed) {
+  const { c, pending } = typeCounts();
+  const have = [c[0] + pending[0], c[1] + pending[1], c[2] + pending[2]];
+  const t = targets(Tfixed || have[0] + have[1] + have[2] + 1);
+  let best = WORKER, bd = -1e9;
+  for (const k of [WORKER, SCOUT, SOLDIER]) { const d = t[k] - have[k]; if (d > bd) { bd = d; best = k; } }
+  return best;
+}
+function pickPost() {
+  const n = [0, 0];
+  for (const s of ants) if (s.type === SOLDIER && s.state === PATROL) n[s.post]++;
+  return n[1] < n[0] ? 1 : 0;
+}
+const nearNest = a => (a.x - NEST.x) ** 2 + (a.y - NEST.y) ** 2 <= 150;
+
+// ───────────────────────── scouting & marks ─────────────────────────
+// A scout's path is loop-erased as it goes, so retracing it gives a fairly direct route.
+function trailStep(a) {
+  const i = a.y * W + a.x, k = a.tmap.get(i);
+  if (k !== undefined) {
+    for (let j = a.trail.length - 1; j > k; j--) a.tmap.delete(a.trail[j]);
+    a.trail.length = k + 1;
+  } else { a.tmap.set(i, a.trail.length); a.trail.push(i); }
+}
+const knownNear = (x, y) => marks.some(m => (m.x - x) ** 2 + (m.y - y) ** 2 <= 225);   // one flag per pile
+function markFood(a, fx, fy) {
+  if (knownNear(fx, fy)) return;
+  marks.push({ x: fx, y: fy, path: a.trail.slice().reverse() });   // pile → nest
+}
+// Marked trails stay scented while the pile still has food; gone once it's eaten.
+function marksTick() {
+  if (tick % 10) return;
+  for (let k = marks.length - 1; k >= 0; k--) {
+    const m = marks[k];
+    if (tick % 30 === 0) {
+      let any = false;
+      for (let y = m.y - 6; y <= m.y + 6 && !any; y++) for (let x = m.x - 6; x <= m.x + 6; x++)
+        if (inb(x, y) && food[y * W + x]) { any = true; break; }
+      if (!any) { marks.splice(k, 1); continue; }
+    }
+    const L = m.path.length;
+    for (let j = 0; j < L; j++) {
+      const c = m.path[j], f = j / L;
+      const tf = (0.4 + 0.6 * (1 - f)) * 2, th = (0.4 + 0.6 * f) * 2;
+      if (tf > toFood[c]) toFood[c] = tf;      // strongest at the pile
+      if (th > toHome[c]) toHome[c] = th;      // strongest at the nest
+    }
+  }
+}
+
+// ───────────────────────── queen & eggs ─────────────────────────
+function claimEgg(a) {
+  const e = eggs.find(e => e.st === E_LOOSE);
+  const slot = slotTaken.indexOf(0);
+  if (!e || slot < 0) return false;
+  slotTaken[slot] = 1; e.st = E_CLAIMED; e.slot = slot; a.egg = e; a.state = FETCH;
+  return true;
+}
+
+// carrier died or got lost: the egg goes back to being loose where it is
+function dropEgg(a) {
+  const e = a.egg; if (!e) return;
+  slotTaken[e.slot] = 0; e.slot = -1; e.st = E_LOOSE; a.egg = null;
+}
+
+function queenTick() {
+  if (queen.hp < QUEEN_HP && !queen.dead) queen.hp += 0.004;
+  if (queen.dead) return;                     // no more eggs
+  if (queen.cd > 0) queen.cd--;
+  else if (stored >= EGG_COST + RESERVE && eggs.length < nurseryCells.length &&
+           eggs.filter(e => e.st < E_INCUB).length < MAX_LOOSE) {
+    stored -= EGG_COST;
+    const ex = grid[queen.y * W + queen.x - 3] === TUNNEL ? queen.x - 3 : queen.x;     // laid just behind her
+    eggs.push({ x: ex, y: queen.y, st: E_LOOSE, slot: -1, timer: HATCH, type: pickType() });
+    queen.cd = LAY_CD;
+  }
+  if (Math.random() < 0.05) {                 // she potters about near her spot
+    const d = (Math.random() * 8) | 0, nx = queen.x + DX[d], ny = queen.y + DY[d];
+    if (inb(nx, ny) && grid[ny * W + nx] === TUNNEL && Math.abs(nx - QHOME.x) <= 2 && Math.abs(ny - QHOME.y) <= 1) {
+      queen.x = nx; queen.y = ny;
+    }
+  }
+  for (let k = eggs.length - 1; k >= 0; k--) {
+    const e = eggs[k];
+    if (e.st === E_INCUB && e.timer > 0) e.timer--;
+    if (e.st === E_INCUB && e.timer <= 0 && ants.length < MAXANTS) {
+      slotTaken[e.slot] = 0; spawnAnt(4000, e.x, e.y, e.type); born++; eggs.splice(k, 1);
+    }
+  }
+}
+
+function topY(x) { let y = 0; while (y < H && grid[y * W + x] === AIR) y++; return y; }
+
+// Drop one pellet near x: it rolls downhill and never plugs an opening.
+function dropPellet(x) {
+  if (moundCells >= MOUND_MAX) return;
+  for (let g = 0; g < 24; g++) {
+    x = Math.max(1, Math.min(W - 2, x));
+    const y = topY(x);
+    if (y >= H) return;
+    if (grid[y * W + x] === TUNNEL) { x += Math.random() < 0.5 ? -2 : 2; continue; }
+    const yl = topY(x - 1), yr = topY(x + 1);
+    const canL = yl < H && grid[yl * W + x - 1] !== TUNNEL && yl > y + 1;
+    const canR = yr < H && grid[yr * W + x + 1] !== TUNNEL && yr > y + 1;
+    if (canL || canR) { x += canL && canR ? (Math.random() < 0.5 ? -1 : 1) : (canL ? -1 : 1); continue; }
+    if (y - 1 < surf[x] - MOUND_H) return;
+    grid[(y - 1) * W + x] = DIRT; food[(y - 1) * W + x] = 0; moundCells++;
+    return;
+  }
+}
+
+// ───────────────────────── food physics ─────────────────────────
+let flip = 0;
+function fallFood() {
+  flip ^= 1;
+  for (let y = 90; y >= 0; y--) {
+    for (let k = 0; k < W; k++) {
+      const x = flip ? k : W - 1 - k, i = y * W + x;
+      if (!food[i]) continue;
+      const b = i + W;
+      if (grid[b] === AIR && !food[b]) { food[b] = 1; food[i] = 0; continue; }
+      const dir = Math.random() < 0.5 ? -1 : 1;
+      for (const s of [dir, -dir]) {
+        const xx = x + s;
+        if (xx >= 0 && xx < W && grid[b + s] === AIR && !food[b + s] && grid[i + s] === AIR && !food[i + s]) {
+          food[b + s] = 1; food[i] = 0; break;
+        }
+      }
+    }
+  }
+}
+
+function simTick() {
+  tick++;
+  if (exitDirty && tick % 5 === 0) computeExit();
+  if (project && project.dirty && tick % 5 === 0) { bfs(project.dist, [project.tip]); project.dirty = false; }
+  if (project && tick - project.t0 > 6000) finishProject(project);   // don't let a stalled dig drag on forever
+  for (const a of ants) { stepAnt(a); a.life--; }
+  if (cfg.spiders && --spiderTimer <= 0) {
+    if (spiders.length < spiderCap()) spawnSpider();
+    spiderTimer = 6000 + ((Math.random() * 3000) | 0);          // every 3–5 minutes at 1x
+  }
+  for (let k = spiders.length - 1; k >= 0; k--) if (!spiderTick(spiders[k])) spiders.splice(k, 1);
+  threat *= 0.9997;
+  if (alarm > 0) alarm--;
+  for (const sp of spiders) {                  // an ant that sees a spider raises the alarm for everyone
+    for (const a of ants) if ((a.x - sp.x) ** 2 + (a.y - sp.y) ** 2 <= 144) { alarm = 900; break; }
+  }
+  if (spiders.length && tick % 5 === 0) {      // soldiers need a route to any spider that's inside the tunnels
+    const inside = spiders.find(sp => grid[sp.y * W + sp.x] === TUNNEL && sp.y > surf[sp.x]);
+    if (inside) bfs(spiderDist, [inside.y * W + inside.x]);
+  }
+  let n = 0;
+  for (const a of ants) { if (a.life > 0) ants[n++] = a; else { died++; dropEgg(a); } }
+  ants.length = n;
+  queenTick();
+  marksTick();
+  if (tick % 3 === 0) { pass++; for (const a of ants) revealAnt(a, false); revealQueen(false); }   // exploring keeps up at high speed
+  fallFood();
+  for (let i = 0; i < W * H; i++) {
+    let v = toHome[i]; if (v > 0) { v *= EVAP; toHome[i] = v < 0.004 ? 0 : v; }
+    v = toFood[i];     if (v > 0) { v *= EVAP; toFood[i] = v < 0.004 ? 0 : v; }
+  }
+}
+
+// ───────────────────────── rendering ─────────────────────────
+const canvas = document.getElementById('c');
+const cctx = canvas.getContext('2d');
+const mini = document.getElementById('mini'), mctx = mini.getContext('2d');
+const wc = document.createElement('canvas');          // the whole world, one pixel per cell
+wc.width = W; wc.height = H;
+const wctx = wc.getContext('2d');
+const img = wctx.createImageData(W, H);
+
+// view: the window shows a scrollable slice of the world at an integer pixel scale
+let dpr = 1, cw = 0, ch = 0, scale = 4, vw = W, offX = 0, camX = 0;
+function clampCam() { camX = Math.max(0, Math.min(W - vw, camX)); }
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  cw = Math.round(innerWidth * dpr); ch = Math.round(innerHeight * dpr);
+  canvas.width = cw; canvas.height = ch;
+  scale = Math.max(2, Math.floor(ch / H));            // world fills the window height
+  vw = Math.min(W, cw / scale);                       // cells visible across
+  offX = Math.floor((cw - vw * scale) / 2);           // centred if the window is wider than the world
+  clampCam();
+}
+const centerCam = () => { camX = NEST.x - vw / 2; clampCam(); };
+function present() {
+  cctx.imageSmoothingEnabled = false;
+  cctx.fillStyle = '#07050a'; cctx.fillRect(0, 0, cw, ch);
+  const sx = Math.floor(camX);
+  cctx.drawImage(wc, sx, 0, vw, H, offX, 0, vw * scale, H * scale);
+  mctx.imageSmoothingEnabled = false;
+  mctx.drawImage(wc, 0, 0, W, H, 0, 0, mini.width, mini.height);
+  mctx.strokeStyle = '#fff'; mctx.lineWidth = 1.5;
+  mctx.strokeRect(sx / W * mini.width + 0.5, 0.5, vw / W * mini.width - 1, mini.height - 1);
+}
+const px = new Uint32Array(img.data.buffer);
+const rgb = (r, g, b) => ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
+
+const skyPal = [], dirtPal = [], tunPal = [];
+for (let y = 0; y < H; y++) {
+  const t = Math.min(1, y / 60);
+  skyPal.push(rgb(90 + 60 * t | 0, 150 + 50 * t | 0, 215 + 20 * t | 0));
+}
+for (let d = 0; d <= (H >> 3); d++) for (let n = 0; n < 4; n++) {
+  const f = 1 - d * 0.018, j = (n - 1.5) * 5;
+  dirtPal.push(rgb((150 + j) * f | 0, (118 + j) * f | 0, (76 + j) * f | 0));
+}
+for (let n = 0; n < 4; n++) tunPal.push(rgb(86 + n * 2, 66 + n * 2, 47 + n * 2));
+const ROCKC = [rgb(110, 110, 114), rgb(98, 98, 102), rgb(120, 120, 124), rgb(104, 104, 108)];
+const GRASS = rgb(96, 148, 62);
+const MOUNDC = [rgb(166, 128, 82), rgb(158, 121, 77), rgb(172, 134, 86), rgb(150, 114, 72)];
+const PELLET = rgb(166, 128, 82);
+const STOREC = rgb(222, 178, 64);
+const EGGC = rgb(244, 240, 226), EGGSOON = rgb(255, 226, 140);
+const QUEEN1 = rgb(120, 24, 48), QUEEN2 = rgb(176, 48, 78);
+const nurPal = [0, 1, 2, 3].map(n => rgb(120 + n * 2, 88 + n * 2, 66 + n * 2));
+const ANTHUNGRY = rgb(160, 160, 150);
+const ANTBODY = rgb(40, 28, 20);
+const SCOUTC = rgb(204, 92, 28);
+const SOLDC = rgb(92, 24, 20), SOLDHEAD = rgb(160, 44, 32);
+const FLAG = rgb(236, 72, 153);
+const FOODC = rgb(242, 201, 76);
+const ANTC  = rgb(18, 12, 8);
+
+const FOGC = rgb(7, 5, 9);
+const SPIDERC = rgb(46, 22, 58), SPIDERHIT = rgb(210, 190, 230), SPIDEREYE = rgb(235, 50, 50), QUEENDEAD = rgb(110, 100, 100);
+function applyFog() {
+  for (let i = 0; i < W * H; i++) {
+    if (vis[i]) continue;
+    if (!explored[i]) { px[i] = FOGC; continue; }
+    const c = px[i];                              // seen before, nobody here now: dim and cool it
+    px[i] = ((255 << 24) | ((((c >> 16) & 255) * 0.55 | 0) << 16) | ((((c >> 8) & 255) * 0.42 | 0) << 8) | ((c & 255) * 0.38 | 0)) >>> 0;
+  }
+}
+const put = (x, y, c) => { if (x >= 0 && y >= 0 && x < W && y < H) px[y * W + x] = c; };
+
+function draw() {
+  if (cfg.fog) {
+    vis.fill(0); pass++;
+    for (const a of ants) revealAnt(a, true);
+    revealQueen(true);
+    if (mouse.down) revealCircle(mouse.x, mouse.y, 4);    // lit only while you're pouring
+  }
+  for (let y = 0; y < H; y++) {
+    const row = y * W;
+    for (let x = 0; x < W; x++) {
+      const i = row + x, t = grid[i];
+      if (t === AIR) px[i] = skyPal[y];
+      else if (t === DIRT) px[i] = (y < surf[x]) ? MOUNDC[tint[i]] : (y === surf[x]) ? GRASS : dirtPal[(y >> 3) * 4 + tint[i]];
+      else if (t === TUNNEL) px[i] = nurserySet[i] ? nurPal[tint[i]] : tunPal[tint[i]];
+      else px[i] = ROCKC[tint[i]];
+      if (food[i]) px[i] = FOODC;
+    }
+  }
+  if (cfg.show) {
+    for (let i = 0; i < W * H; i++) {
+      const h = toHome[i], f = toFood[i];
+      if (h > 0.02 || f > 0.02) {
+        const c = px[i];
+        let r = c & 255, g = (c >> 8) & 255, b = (c >> 16) & 255;
+        if (h > 0.02) { const a = Math.min(0.85, h * 1.1); r += (60 - r) * a; g += (120 - g) * a; b += (255 - b) * a; }
+        if (f > 0.02) { const a = Math.min(0.85, f * 1.1); r += (40 - r) * a; g += (255 - g) * a; b += (80 - b) * a; }
+        px[i] = rgb(r | 0, g | 0, b | 0);
+      }
+    }
+  }
+  const shown = Math.min(stored, storeCells.length);
+  for (let k = 0; k < shown; k++) px[storeCells[k]] = STOREC;
+  for (const e of eggs) {
+    if (e.st === E_CARRIED) continue;
+    px[e.y * W + e.x] = (e.st === E_INCUB && e.timer < 60 && (tick >> 3) & 1) ? EGGSOON : EGGC;
+  }
+  for (const m of marks) {                      // flag above each marked pile
+    if (m.y > 3) { px[(m.y - 3) * W + m.x] = FLAG; px[(m.y - 4) * W + m.x] = FLAG; }
+  }
+  // sizes: scout 1×1, worker 2×1, soldier 3×1 (head first, body trailing), queen 4×2.
+  // moving straight up/down they stand upright, as if climbing the tunnel.
+  for (const a of ants) {
+    const hungry = a.life < HUNGRY;
+    const bx = a.vert ? 0 : -a.face, by = a.vert ? -a.vface : 0;      // step from head toward tail
+    if (a.type === SOLDIER) {
+      put(a.x, a.y, hungry ? ANTHUNGRY : SOLDHEAD);
+      put(a.x + bx, a.y + by, hungry ? ANTHUNGRY : SOLDC); put(a.x + 2 * bx, a.y + 2 * by, hungry ? ANTHUNGRY : SOLDC);
+    } else if (a.type === WORKER) {
+      put(a.x, a.y, hungry ? ANTHUNGRY : ANTC); put(a.x + bx, a.y + by, hungry ? ANTHUNGRY : ANTBODY);
+    } else put(a.x, a.y, hungry ? ANTHUNGRY : SCOUTC);
+    const cx = a.vert ? a.x + a.face : a.x, cy = a.vert ? a.y : a.y - 1;   // what it carries
+    if (a.carry) put(cx, cy, FOODC);
+    else if (a.egg && a.egg.st === E_CARRIED) put(cx, cy, EGGC);
+    else if (a.load > 0) put(cx, cy, PELLET);
+  }
+  for (let dy = -1; dy <= 0; dy++) for (let dx = -2; dx <= 1; dx++)
+    put(queen.x + dx, queen.y + dy, queen.dead ? QUEENDEAD : dx === 1 ? QUEEN2 : QUEEN1);
+  for (const sp of spiders) {                  // 5×3: body, red eyes, legs — only where an ant can see it
+    if (cfg.fog && !vis[sp.y * W + sp.x]) continue;
+    const bc = sp.hit ? SPIDERHIT : SPIDERC;
+    for (let dx = -1; dx <= 1; dx++) { put(sp.x + dx, sp.y - 2, bc); put(sp.x + dx, sp.y - 1, bc); }
+    put(sp.x - 1, sp.y - 2, SPIDEREYE); put(sp.x + 1, sp.y - 2, SPIDEREYE);
+    for (const sd of [-2, 2]) { put(sp.x + sd, sp.y - 1, bc); put(sp.x + sd, sp.y, bc); }
+  }
+  if (cfg.fog) applyFog();
+  wctx.putImageData(img, 0, 0);
+  present();
+}
+
+// ───────────────────────── input / UI ─────────────────────────
+let mouse = { down: false, x: 0, y: 0, cx: 0, cy: 0, inside: false };   // x,y = world cell; cx,cy = window px
+let panning = false, panX = 0;
+const keys = {};
+const updateMouseWorld = () => {             // recomputed every frame so pouring follows a scrolling view
+  mouse.x = Math.floor(camX + (mouse.cx * dpr - offX) / scale);
+  mouse.y = Math.floor(mouse.cy * dpr / scale);
+};
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId);
+  if (e.button === 0) mouse.down = true; else { panning = true; panX = e.clientX; }
+});
+addEventListener('pointermove', e => {
+  mouse.cx = e.clientX; mouse.cy = e.clientY; mouse.inside = true;
+  if (panning) { camX -= (e.clientX - panX) * dpr / scale; panX = e.clientX; clampCam(); }
+});
+addEventListener('pointerup',     () => { mouse.down = false; panning = false; });
+addEventListener('pointercancel', () => { mouse.down = false; panning = false; });
+document.documentElement.addEventListener('pointerleave', () => mouse.inside = false);
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('wheel', e => {
+  if (e.target.closest && e.target.closest('#hud')) return;
+  camX += (e.deltaX || e.deltaY) * dpr / scale * 0.8; clampCam(); e.preventDefault();
+}, { passive: false });
+
+// minimap: click or drag to jump the view
+let miniDrag = false;
+const miniGo = e => { const r = mini.getBoundingClientRect(); camX = (e.clientX - r.left) / r.width * W - vw / 2; clampCam(); };
+mini.addEventListener('pointerdown', e => { miniDrag = true; mini.setPointerCapture(e.pointerId); miniGo(e); });
+mini.addEventListener('pointermove', e => { if (miniDrag) miniGo(e); });
+mini.addEventListener('pointerup',   () => miniDrag = false);
+
+// keyboard / edge scrolling, once per frame
+function scrollView(dt) {
+  const sp = 140 * (keys.shift ? 3 : 1) * dt / 1000;      // cells per second
+  let d = 0;
+  if (keys.a || keys.arrowleft) d -= 1;
+  if (keys.d || keys.arrowright) d += 1;
+  if (!mouse.down && !panning && !miniDrag && mouse.inside) {
+    if (mouse.cx < 18) d -= 1; else if (mouse.cx > innerWidth - 18) d += 1;
+  }
+  if (d) { camX += d * sp; clampCam(); }
+}
+
+function pour() {
+  if (!mouse.down) return;
+  for (let k = 0; k < 4; k++) {
+    const x = mouse.x + ((Math.random() * 5 - 2) | 0), y = mouse.y + ((Math.random() * 5 - 2) | 0);
+    if (inb(x, y) && grid[y * W + x] === AIR && !food[y * W + x]) food[y * W + x] = 1;
+  }
+}
+
+const $ = id => document.getElementById(id);
+const toggle = (btn, key) => { cfg[key] = !cfg[key]; btn.classList.toggle('on', cfg[key]); };
+$('bFog').onclick   = () => toggle($('bFog'), 'fog');
+$('bPher').onclick  = () => toggle($('bPher'), 'show');
+$('bPause').onclick = () => toggle($('bPause'), 'paused');
+$('bSpiders').onclick = () => toggle($('bSpiders'), 'spiders');
+$('bSpawn').onclick  = () => { if (spiders.length < 3) spawnSpider(); };
+$('bAnts').onclick  = () => { for (let n = 0; n < 10 && ants.length < MAXANTS; n++) spawnAnt(4000, undefined, undefined, pickType()); };
+$('bReset').onclick = () => resetGame();
+$('speed').oninput  = e => cfg.speed = +e.target.value;
+$('dig').oninput    = e => cfg.dig = +e.target.value;
+addEventListener('keydown', e => {
+  if (e.key === 'p' || e.key === 'P') $('bPher').click();
+  else if (e.key === 'f' || e.key === 'F') $('bFog').click();
+  else if (e.key === ' ') { e.preventDefault(); $('bPause').click(); }
+  else if (e.key === 'r' || e.key === 'R') resetGame();
+  else if (e.key === 'g' || e.key === 'G') $('bFull').click();
+  else if (e.key === 'x' || e.key === 'X') $('bSpiders').click();
+  else if (e.key === 's' || e.key === 'S') $('bSpawn').click();
+  else if (e.key === 'h' || e.key === 'H') toggleHud();
+  keys[e.key.toLowerCase()] = true;
+  if (e.key.startsWith('Arrow') && e.target.tagName !== 'INPUT') e.preventDefault();
+});
+addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouse.down = panning = false; });
+
+const resetGame = () => { genWorld(); centerCam(); };
+function toggleHud() {
+  const hid = $('hud').classList.toggle('hidden');
+  $('bShow').style.display = hid ? 'block' : 'none';
+}
+$('bHud').onclick = $('bShow').onclick = toggleHud;
+$('bFull').onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+};
+for (const b of document.querySelectorAll('button')) b.addEventListener('click', () => b.blur());   // keep Space/Enter for the game
+for (const r of document.querySelectorAll('input[type=range]')) r.addEventListener('change', () => r.blur());
+addEventListener('resize', resize);
+
+function hud() {
+  const { c, pending } = typeCounts();
+  const t = targets(Math.max(1, ants.length + eggs.length));
+  $('roster').innerHTML = [SCOUT, WORKER, SOLDIER].map(k =>
+    `<div class="card"><i style="background:${TYPE_SWATCH[k]}"></i><div>` +
+    `<b>${TYPE_NAME[k]}</b> ${c[k]} <small>/ want ${t[k]}${pending[k] ? ` · ${pending[k]} egg${pending[k] > 1 ? 's' : ''}` : ''}</small><br>` +
+    `<small>${TYPE_ROLE[k]}</small></div></div>`).join('') +
+    `<div class="card"><i style="background:#2e163a"></i><div><b>Spiders</b> ${spiders.length} <small>alive${queen.dead ? '' : queen.hp < QUEEN_HP - 0.5 ? ` · queen hp ${Math.max(0, Math.ceil(queen.hp))}` : ''}</small><br>` +
+    `<small>killed ${spidersKilled} · ants lost ${lostToSpiders}</small></div></div>` +
+    `<div class="card"><i style="background:#ec4899"></i><div><b>Known food</b> ${marks.length} <small>pile${marks.length === 1 ? '' : 's'}</small><br>` +
+    `<small>flagged by scouts</small></div></div>`;
+  const n = { explore: 0, forage: 0, home: 0, rest: 0, dig: 0, nurse: 0, patrol: 0 };
+  for (const a of ants) {
+    switch (a.state) {
+      case EXPLORE: n.explore++; break;
+      case FORAGE: n.forage++; break;
+      case RETURN: case BACKTRACK: n.home++; break;
+      case REST: n.rest++; break;
+      case PATROL: n.patrol++; break;
+      case FETCH: case CARRYEGG: n.nurse++; break;
+      default: n.dig++;                        // digging / tunnelling / hauling dirt
+    }
+  }
+  $('stats').innerHTML =
+    `<span>ants <b>${ants.length}</b></span>` +
+    `<span>exploring <b>${n.explore}</b> foraging <b>${n.forage}</b> returning <b>${n.home}</b> resting <b>${n.rest}</b> ` +
+    `digging <b>${n.dig}</b> nursing <b>${n.nurse}</b> patrolling <b>${n.patrol}</b></span>` +
+    `<span>food store <b>${stored}/${storeCells.length}</b></span>` +
+    `<span>delivered <b>${delivered}</b></span>` +
+    `<span>eggs <b>${eggs.filter(e => e.st < E_INCUB).length}</b> waiting · <b>${eggs.filter(e => e.st === E_INCUB).length}</b> incubating</span>` +
+    `<span>born <b>${born}</b> died <b>${died}</b></span>` +
+    `<span>tunnels <b>${tunnelCells}</b> rooms <b>${chambers}</b>${project ? ` (digging one: ${project.cells.length - project.left}/${project.cells.length})` : ''} mound <b>${moundCells}</b></span>` +
+    (queen.dead ? `<span style="color:#e0645a">the queen is dead — no more eggs</span>` : '') +
+    (ants.length === 0 && !eggs.some(e => e.st === E_INCUB) ? `<span style="color:#e0645a">no workers left — press R</span>` : '');
+}
+
+let last = performance.now(), acc = 0, frameNo = 0;
+function frame(now) {
+  const dt = Math.min(100, now - last); last = now;
+  if (!cfg.paused) {
+    acc += dt * cfg.speed * 0.03;            // 30 ticks/sec at 1x
+    let n = 0;
+    while (acc >= 1 && n++ < 40) { simTick(); acc--; }
+    if (acc > 1) acc = 0;
+  }
+  scrollView(dt); updateMouseWorld();
+  pour(); draw();
+  if (frameNo++ % 6 === 0) hud();            // the panel's text doesn't need 60 updates a second
+  requestAnimationFrame(frame);
+}
+
+resize();
+genWorld(); centerCam();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
