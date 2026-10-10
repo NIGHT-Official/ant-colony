@@ -1,20 +1,20 @@
-// Runs the Ant Colony simulation without a browser and measures how long a colony lasts.
+// Runs the Ant Colony simulation without a browser and measures how colonies fare when left alone.
 //
-//   node tools/measure.js              10 colonies per scenario, one simulated hour each
-//   node tools/measure.js 20 120       20 colonies per scenario, two simulated hours each
+//   node tools/measure.js              4 colonies per scenario, 14 simulated days each
+//   node tools/measure.js 8 30         8 colonies per scenario, 30 simulated days each
 //
 // It reads the <script> out of index.html, so it always measures the game as it is now.
-// Nobody pours food: each colony is left alone. Use it before and after a change to see
-// whether the change helps a colony survive. Random numbers are not seeded, so two runs
-// give slightly different figures; look at the spread, not one number.
+// Nobody pours food: each colony lives on the seeds that fall by themselves. Use it before
+// and after a change to see whether the change helps. Random numbers are not seeded, so two
+// runs give slightly different figures; look at the spread, not one number.
 const fs = require('fs');
+const path = require('path');
 const vm = require('vm');
 
-const path = require('path');
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-const TRIALS = Number(process.argv[2]) || 10;
-const MINUTES = Number(process.argv[3]) || 60;
 const script = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'));
+const TRIALS = Number(process.argv[2]) || 4;
+const DAYS = Number(process.argv[3]) || 14;
 
 // A stand-in for anything the page touches that only exists in a browser.
 function fake() {
@@ -32,60 +32,62 @@ function fake() {
 
 function newColony() {
   const context = vm.createContext({
-    document: { querySelectorAll: () => [], getElementById: () => fake(), createElement: () => fake(), body: fake(), documentElement: fake() },
-    window: { devicePixelRatio: 1 },
-    addEventListener() {}, requestAnimationFrame() {},
+    document: { addEventListener() {}, hidden: false, querySelectorAll: () => [], getElementById: () => fake(), createElement: () => fake(), body: fake(), documentElement: fake() },
+    window: { devicePixelRatio: 1 }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    addEventListener() {}, requestAnimationFrame() {}, confirm: () => true,
     innerWidth: 1280, innerHeight: 720, devicePixelRatio: 1,
-    performance: { now: () => 0 }, console, Math,
+    performance: { now: () => 0 }, console, Math, Date, JSON, btoa, atob,
     Uint8Array, Float32Array, Int16Array, Int32Array, Uint32Array, Uint8ClampedArray, Map, Set,
   });
   vm.runInContext(script, context);
   return context;
 }
+exports.newColony = newColony;
+if (require.main !== module) return;       // used as a helper by the other tools
 
-const TICKS_PER_MINUTE = 30 * 60;   // the game runs 30 ticks a second at 1x speed
-const LIMIT = MINUTES * TICKS_PER_MINUTE;
+let ticksRun = 0, msRun = 0;
 
-function run({ spiders, pour }) {
+function run({ spiders }) {
   const c = newColony();
   vm.runInContext(`cfg.spiders = ${spiders};`, c);
-  if (pour) {
-    // One generous pile of food dropped on the surface 60 cells right of the main entrance, at the start.
-    vm.runInContext(`{ const px = NEST.x + 60; let n = 0;
-      for (let y = surf[px] - 12; y < surf[px]; y++) for (let x = px - 12; x <= px + 12; x++)
-        if (grid[y * W + x] === AIR && n < ${pour}) { food[y * W + x] = 1; n++; } }`, c);
-  }
-  let peak = 0, peakAt = 0, firstStarve = 0;
+  const DAY = vm.runInContext('DAY', c);
   const step = vm.runInContext(`(function (n) { for (let k = 0; k < n; k++) simTick();
-    return [ants.length, stored, eggs.length, queen.dead, tunnelCells, born, died, lostToSpiders, delivered]; })`, c);
-  let t = 0, s;
-  while (t < LIMIT) {
-    s = step(30); t += 30;
-    if (s[0] > peak) { peak = s[0]; peakAt = t; }
-    if (!firstStarve && s[1] === 0) firstStarve = t;
-    if (s[0] === 0 && s[2] === 0) break;       // no ants and no eggs: the colony is over
+    let lying = 0; for (let i = 0; i < 100 * W; i++) lying += food[i];
+    return [ants.length, stored, eggs.length, queen.dead, tunnelCells, born, died, lostToSpiders, delivered, lying, chambers]; })`, c);
+  const start = vm.runInContext('ants.length', c);
+  const perDay = [];
+  let s, low = start, emptyDays = 0;
+  const t0 = Date.now();
+  for (let day = 1; day <= DAYS; day++) {
+    for (let part = 0; part < 24; part++) {
+      s = step(DAY / 24); ticksRun += DAY / 24;
+      if (s[0] < low) low = s[0];
+      if (s[1] === 0) emptyDays += 1 / 24;
+    }
+    perDay.push(s[0]);
+    if (s[0] === 0 && s[2] === 0) break;       // no ants and no brood: the colony is over
   }
-  return { minutes: t / TICKS_PER_MINUTE, alive: s[0], survived: t >= LIMIT, peak, peakAtMin: peakAt / TICKS_PER_MINUTE,
-           storeEmptyMin: firstStarve / TICKS_PER_MINUTE, queenDead: s[3], tunnels: s[4], born: s[5], died: s[6],
-           toSpiders: s[7], delivered: s[8] };
+  msRun += Date.now() - t0;
+  return { days: perDay.length, start, end: s[0], low, emptyDays, stored: s[1], brood: s[2], queenDead: s[3], tunnels: s[4],
+           born: s[5], died: s[6], toSpiders: s[7], delivered: s[8], lying: s[9], rooms: s[10], perDay };
 }
 
-function report(name, options, trials) {
+function report(name, options) {
   const rows = [];
-  for (let k = 0; k < trials; k++) rows.push(run(options));
-  const sorted = rows.map(r => r.minutes).sort((a, b) => a - b);
-  const mean = key => (rows.reduce((n, r) => n + r[key], 0) / rows.length);
-  console.log(`\n== ${name} (${trials} colonies)`);
-  console.log(`   colony gone after: shortest ${sorted[0].toFixed(1)} min, middle ${sorted[trials >> 1].toFixed(1)} min, longest ${sorted[trials - 1].toFixed(1)} min`);
-  console.log(`   still alive after ${MINUTES} min: ${rows.filter(r => r.survived).length} of ${trials}`);
-  console.log(`   food store first empty: ${mean('storeEmptyMin').toFixed(1)} min (average)`);
-  console.log(`   most ants at once: ${mean('peak').toFixed(1)} (average), reached at ${mean('peakAtMin').toFixed(1)} min`);
-  console.log(`   born ${mean('born').toFixed(1)}, died ${mean('died').toFixed(1)}, of which to spiders ${mean('toSpiders').toFixed(1)}, food carried home ${mean('delivered').toFixed(1)}`);
-  console.log(`   queen killed in ${rows.filter(r => r.queenDead).length} of ${trials}; tunnel cells at the end ${mean('tunnels').toFixed(0)}`);
+  for (let k = 0; k < TRIALS; k++) rows.push(run(options));
+  const mean = key => rows.reduce((n, r) => n + r[key], 0) / rows.length;
+  const list = key => rows.map(r => Math.round(r[key])).join(', ');
+  console.log(`\n== ${name} (${TRIALS} colonies, ${DAYS} days each)`);
+  console.log(`   alive at the end: ${rows.filter(r => r.end > 0).length} of ${TRIALS}`);
+  console.log(`   ants: started with ${rows[0].start}; at the end ${list('end')}; fewest at any time ${list('low')}`);
+  console.log(`   brood waiting to grow up at the end: ${list('brood')}; born ${list('born')}; died ${list('died')} (to spiders ${list('toSpiders')})`);
+  console.log(`   seeds carried home: ${list('delivered')} (${(mean('delivered') / DAYS).toFixed(1)} a day); in store at the end ${list('stored')}; lying outside ${list('lying')}`);
+  console.log(`   days with an empty store: ${rows.map(r => r.emptyDays.toFixed(1)).join(', ')}`);
+  console.log(`   tunnel cells at the end: ${list('tunnels')}; rooms dug: ${list('rooms')}; queen killed in ${rows.filter(r => r.queenDead).length} of ${TRIALS}`);
+  console.log(`   ants day by day, first colony: ${rows[0].perDay.join(' ')}`);
 }
 
-const T = TRIALS;
-report('Left alone, spiders on (the default)', { spiders: true, pour: 0 }, T);
-report('Left alone, spiders off', { spiders: false, pour: 0 }, T);
-report('One pile of 150 food at the start, then left alone, spiders off', { spiders: false, pour: 150 }, T);
-report('One pile of 150 food at the start, then left alone, spiders on', { spiders: true, pour: 150 }, T);
+report('Left alone, spiders off (the default)', { spiders: false });
+report('Left alone, spiders on', { spiders: true });
+console.log(`\nSpeed of this run: ${Math.round(ticksRun / (msRun / 1000)).toLocaleString('en')} ticks a second, ` +
+  `which is ${Math.round(ticksRun / (msRun / 1000) / 9).toLocaleString('en')} times real time.`);
