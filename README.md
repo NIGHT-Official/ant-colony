@@ -31,3 +31,12 @@ The sliders set speed and "dig drive" (how eagerly idle workers dig).
 ## Tuning
 
 Constants near the top of the `<script>`: lifespans and food (`LIFE_MAX`, `EAT_GAIN`, `EGG_COST`), digging (`CAP`, `RIM`), and spiders (`SPIDER_*`, `QUEEN_HP`, `QUEEN_MORTAL`). The soldier/scout/worker mix is in `targets()`. Main behaviour lives in `stepAnt()`, `queenTick()` and `spiderTick()`.
+
+## Measuring
+
+`node tools/measure.js` runs the simulation without a browser and reports how long colonies last when nobody feeds them
+(10 colonies per scenario, one simulated hour each; `node tools/measure.js 20 120` for 20 colonies and two hours).
+It needs Node.js and takes a few minutes.
+
+First measurement, 2026-10-10 (20 colonies per scenario): left alone, every colony was gone in about 4 minutes. One pile
+of 150 food at the start stretched that to about 11 to 14 minutes. None lasted an hour.
