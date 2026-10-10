@@ -2,6 +2,7 @@
 //
 //   node tools/measure.js              4 colonies per scenario, 14 simulated days each
 //   node tools/measure.js 8 30         8 colonies per scenario, 30 simulated days each
+//   node tools/measure.js 4 14 --spiders   also measure with spiders switched on
 //
 // It reads the <script> out of index.html, so it always measures the game as it is now.
 // Nobody pours food: each colony lives on the seeds that fall by themselves. Use it before
@@ -53,7 +54,8 @@ function run({ spiders }) {
   const DAY = vm.runInContext('DAY', c);
   const step = vm.runInContext(`(function (n) { for (let k = 0; k < n; k++) simTick();
     let lying = 0; for (let i = 0; i < 100 * W; i++) lying += food[i];
-    return [ants.length, stored, eggs.length, queen.dead, tunnelCells, born, died, lostToSpiders, delivered, lying, chambers]; })`, c);
+    return [ants.length, stored, eggs.length, queen.dead, tunnelCells, born, died, lostToSpiders, delivered, lying, chambers,
+      diedOutside, diedHungry, diedOld, ants.reduce((k, a) => k + (a.age >= FORAGE_AGE), 0)]; })`, c);
   const start = vm.runInContext('ants.length', c);
   const perDay = [];
   let s, low = start, emptyDays = 0;
@@ -69,7 +71,8 @@ function run({ spiders }) {
   }
   msRun += Date.now() - t0;
   return { days: perDay.length, start, end: s[0], low, emptyDays, stored: s[1], brood: s[2], queenDead: s[3], tunnels: s[4],
-           born: s[5], died: s[6], toSpiders: s[7], delivered: s[8], lying: s[9], rooms: s[10], perDay };
+           born: s[5], died: s[6], toSpiders: s[7], delivered: s[8], lying: s[9], rooms: s[10],
+           outside: s[11], hungry: s[12], old: s[13], grown: s[14], perDay };
 }
 
 function report(name, options) {
@@ -80,7 +83,8 @@ function report(name, options) {
   console.log(`\n== ${name} (${TRIALS} colonies, ${DAYS} days each)`);
   console.log(`   alive at the end: ${rows.filter(r => r.end > 0).length} of ${TRIALS}`);
   console.log(`   ants: started with ${rows[0].start}; at the end ${list('end')}; fewest at any time ${list('low')}`);
-  console.log(`   brood waiting to grow up at the end: ${list('brood')}; born ${list('born')}; died ${list('died')} (to spiders ${list('toSpiders')})`);
+  console.log(`   brood growing at the end: ${list('brood')}; born ${list('born')}; of the ants at the end, old enough to work outside: ${list('grown')}`);
+  console.log(`   died ${list('died')}: outside ${list('outside')}, hunger ${list('hungry')}, old age ${list('old')}, spiders ${list('toSpiders')}`);
   console.log(`   seeds carried home: ${list('delivered')} (${(mean('delivered') / DAYS).toFixed(1)} a day); in store at the end ${list('stored')}; lying outside ${list('lying')}`);
   console.log(`   days with an empty store: ${rows.map(r => r.emptyDays.toFixed(1)).join(', ')}`);
   console.log(`   tunnel cells at the end: ${list('tunnels')}; rooms dug: ${list('rooms')}; queen killed in ${rows.filter(r => r.queenDead).length} of ${TRIALS}`);
@@ -88,6 +92,6 @@ function report(name, options) {
 }
 
 report('Left alone, spiders off (the default)', { spiders: false });
-report('Left alone, spiders on', { spiders: true });
+if (process.argv.includes('--spiders')) report('Left alone, spiders on', { spiders: true });
 console.log(`\nSpeed of this run: ${Math.round(ticksRun / (msRun / 1000)).toLocaleString('en')} ticks a second, ` +
   `which is ${Math.round(ticksRun / (msRun / 1000) / 9).toLocaleString('en')} times real time.`);

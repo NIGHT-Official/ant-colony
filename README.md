@@ -30,6 +30,10 @@ do, the panel shows the rate it is really reaching.
 - **Scale.** One cell is 3.5 mm, so a worker is two cells long. An ant walks about 3 cm a second.
 - **Ants** are small state machines on a cell grid, steering by momentum and scent trails. Each can go a
   number of days without eating, and eats a seed from the nest's store when it gets low.
+- **Age.** A new adult is pale and stays in the nest, nursing and digging. At 43 days it starts working
+  outside. Outside workers are lost at 3.35% a day, out on the surface; a worker that escapes that dies of
+  old age after a little over a year. The dead lie where they fell for a day. The queen lives 15 to 30 years.
+- **The start** is a young colony met in summer: 30 workers of mixed ages, 20 brood of every age, 20 seeds.
 - **Seeds** fall onto the surface in small patches, about one patch an hour. A forager carries one seed home per trip.
 - **Queen** lays eggs when the store can afford them (5 seeds each), faster as the colony grows.
   Workers carry eggs to the nursery, where they take **38 days** to become adults.
@@ -38,7 +42,9 @@ do, the panel shows the rate it is really reaching.
   - **Workers** forage flagged patches, carry eggs, and dig tunnels and rooms when idle. A cell takes about
     ten minutes of work. Sand is hauled out into mounds at the entrances. Finished rooms add food storage.
   - **Soldiers** guard the entrances and rush out against spiders.
-- **Fog of war:** unexplored is black, explored is dim, and ants light up what they see.
+- **Fog of war:** unexplored is black, explored is dim, and ants light up what they see. Above ground an
+  ant sees a tall strip: the ground at its feet and all the sky over it. An entrance with a mound, and
+  every flagged seed patch, stay lit with no ant there.
 - **Spiders** are a leftover from the game this started as, not part of the research. They are off by default.
 
 ## What is real and what is a guess
@@ -53,6 +59,11 @@ number is marked `[research]`, `[borrowed]` (measured in a related species) or `
 | Egg to adult | 38 days | Research, an estimate |
 | Workers born per day | 0.092 × N^0.7 (about 1 a day in a colony of 30) | Research: 0.6–3% growth a day |
 | Seeds per trip | 1 | Research |
+| Age at first work outside | 43 days | Research (summer-born workers) |
+| Outside workers lost | 3.35% a day | Research |
+| Worker old age | 365–455 days | Research, an estimate ("somewhat more than a year") |
+| Queen lifespan | 15–30 years | Borrowed |
+| Share working outside at the start | 40% | Research: 37–40% in summer |
 | Scent trail | half gone in 12 minutes | Research: fades in 15–30 minutes |
 | Foraging trip | 5–15 minutes before giving up | Borrowed: 1.5–47 minutes, 13 on average |
 | Seeds in the store at the start | 20 | Research: one young colony had 20 |
@@ -63,8 +74,8 @@ number is marked `[research]`, `[borrowed]` (measured in a related species) or `
 | Time to dig one cell | 10 minutes of work | **Guess**, from sand moved per worker per day |
 | Rest between jobs | 2–10 minutes | **Guess** |
 
-**Not modelled yet,** although the research covers it: ageing and death from old age, foragers dying
-outside (about 3.4% a day), jobs that change with age, winter and the seasons, day and night, major workers,
+**Not modelled yet,** although the research covers it: the full sequence of jobs by age (only "inside, then
+outside" so far), the long-lived autumn-born workers, carrying the dead away, brood starving, winter and the seasons, day and night, major workers,
 nest moves, the real shape of the nest (a spiral shaft with chambers, up to 3 m deep), and the mating flight.
 
 ## Tools
@@ -85,6 +96,11 @@ Both need Node.js and read the game straight out of `index.html`.
   about 24 seeds carried home a day, 14 brood growing in each nest (none adult yet: that takes 38 days).
   Spiders on: 27 and 25 ants alive. This is a small sample over a short time; it shows the colony no longer
   starves, not that it thrives for months. The simulation ran about 6,500 times faster than real time.
+
+- **2026-10-10, with ageing and death** (2 colonies, 60 simulated days, spiders off): both alive, grown from
+  30 ants to 49 and 48, with 44 and 47 brood growing. 44 and 43 ants were born and 25 died in each, every one
+  of them outside; none starved. That is about 2.6% of the outside workers a day, against the 3.35% aimed for.
+  The colony dipped to 28–30 ants around day 38, before the first new workers were old enough to go out.
 
 ## Tuning
 

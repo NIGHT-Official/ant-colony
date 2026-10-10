@@ -105,6 +105,16 @@ const DIG_TIME   = 10 * MIN;  // work to dig out one cell [guess from research: 
 const SEED_PATCHES_PER_DAY = 24, SEED_PATCH_MIN = 3, SEED_PATCH_MAX = 8;
 const SEED_MAX   = 600;       // no more fall while this many lie on the ground
 const START_ANTS = 30;        // a young colony [research: the smallest colonies have fewer than 100 workers]
+const START_BROOD = 20;       // brood of every age already in the nursery [research: a summer colony always holds brood]
+// ── ageing and death ──
+const FORAGE_AGE = 43 * DAY;  // a worker stays inside until it is this old, then works outside [research: 43 days for summer-born workers]
+const OUTSIDE_DEATHS = 0.0335;   // share of the outside workers that die each day, out on the surface [research: 3.35% a day]
+const CALLOW = 10 * DAY;      // a new adult is pale for its first days [research: callows darken with age; the 10 days is a guess]
+const CORPSE_TIME = DAY;      // a dead ant lies where it fell this long [guess; nestmates carrying the dead away is not modelled]
+const oldAge = () => (365 + Math.random() * 90) * DAY;             // [research: a worker lives "probably somewhat more than a year"]
+const queenLife = () => (15 + Math.random() * 15) * 365 * DAY;     // [borrowed: 15–30 years]
+// Ages for a colony met in summer: about 40% already work outside [research: 37–40% forage in summer].
+const startAge = () => Math.random() < 0.4 ? FORAGE_AGE + Math.random() * 45 * DAY : Math.random() * FORAGE_AGE;
 const MAX_LOOSE  = 3;    // eggs waiting to be carried before the queen pauses
 const LOAD       = 3;    // dirt pellets a digger carries per trip
 const MOUND_MAX  = 700;  // total mound pellets
@@ -117,6 +127,8 @@ const cfg = { spiders: false, fog: true, rate: 0, dig: 0.5, show: false, paused:
 
 let ants = [], stored = 0, delivered = 0, tunnelCells = 0, tick = 0;
 let born = 0, died = 0, moundCells = 0, exitDirty = true;
+let diedOutside = 0, diedOld = 0, diedHungry = 0;   // deaths by cause (spiders are counted separately)
+let corpses = [];                           // { x, y, t }: where an ant died, and when
 let storeCells = [];                       // chamber cells that display the food store
 const exitDist = new Int16Array(W * H);    // tunnel steps to the nearest surface opening
 const nurseDist = new Int16Array(W * H);   // tunnel steps to the nursery chamber
@@ -156,7 +168,7 @@ function genWorld() {
   tunnelCells = 0; stored = 20; delivered = 0; tick = 0; ants = []; eggs = []; marks = []; project = null; chambers = 0;
   spiders = []; spiderTimer = DAY; spidersKilled = 0; lostToSpiders = 0; threat = 0; alarm = 0;
   nurserySet.fill(0); explored.fill(0); rimDone.fill(0);
-  born = 0; died = 0; moundCells = 0;
+  born = 0; died = 0; moundCells = 0; diedOutside = diedOld = diedHungry = 0; corpses = [];
 
   const p1 = Math.random() * 6.28, p2 = Math.random() * 6.28;
   for (let x = 0; x < W; x++) {
@@ -200,6 +212,7 @@ function genWorld() {
   slotTaken = new Uint8Array(nurseryCells.length);
 
   QHOME.x = queen.x = nx - 3; QHOME.y = queen.y = ny + 1; queen.cd = HOUR; queen.hp = QUEEN_HP; queen.dead = false;
+  queen.age = 365 * DAY; queen.maxAge = queenLife();       // she is a year old when we meet her
 
   // food store is drawn as pixels filling the chamber floor-first
   storeCells = [];
@@ -212,7 +225,12 @@ function genWorld() {
   for (let y = 0; y < H; y++) for (let x = Math.max(0, nx - 20); x <= Math.min(W - 1, nx + 20); x++)
     if ((x - nx) ** 2 + (y - surf[nx]) ** 2 <= 400 && y <= surf[x] + 2) explored[y * W + x] = 1;
 
-  for (let n = 0; n < START_ANTS; n++) spawnAnt(fedFor(), undefined, undefined, pickType(START_ANTS));   // the colony's best guess
+  for (let n = 0; n < START_ANTS; n++) spawnAnt(fedFor(), undefined, undefined, pickType(START_ANTS), startAge());   // the colony's best guess
+  for (let k = 0; k < START_BROOD && k < nurseryCells.length; k++) {     // brood at every stage of growing up
+    const c = nurseryCells[k];
+    slotTaken[k] = 1;
+    eggs.push({ x: c % W, y: (c / W) | 0, st: E_INCUB, slot: k, timer: (Math.random() * HATCH) | 0, type: pickType() });
+  }
   foodFalling = true;
   computeExit();
 }
@@ -221,7 +239,7 @@ function genWorld() {
 const FORAGE = 0, RETURN = 1, REST = 2, DIG = 3, TUNNELING = 4, DUMP = 5, FETCH = 6, CARRYEGG = 7,
       EXPLORE = 8, BACKTRACK = 9, PATROL = 10, BUILD = 11, DEFEND = 12;
 
-function spawnAnt(life = fedFor(), x, y, type = WORKER) {
+function spawnAnt(life = fedFor(), x, y, type = WORKER, age = 0) {
   if (x === undefined) {
     let tries = 0;
     do {
@@ -234,6 +252,8 @@ function spawnAnt(life = fedFor(), x, y, type = WORKER) {
     x, y, px: -1, py: -1, dx: DX[d], dy: DY[d],
     state: REST, timer: (Math.random() * 2 * MIN) | 0, work: 0,
     rx: -1, ry: -1,                        // where it last lit up the map
+    age, maxAge: oldAge(),                 // ticks lived, and the age it dies of old age at
+    doomed: false, cause: '',              // doomed: will not come back from its next time outside
     carry: false, stepsHome: 0, stepsFood: 0,
     tun: 0, hx: 0, hy: 1, load: 0, egg: null,
     type, post: 0, mark: null, pi: -2, pfail: 0, trail: null, tmap: null,
@@ -413,15 +433,17 @@ function stepAnt(a) {
         if (walkable(nx, ny) && (nx - NEST.x) ** 2 + (ny - NEST.y) ** 2 <= 100) moveTo(a, nx, ny);
       }
       if (--a.timer <= 0) {
+        const grown = a.age >= FORAGE_AGE;       // young ants keep to the nest [research]
         if (a.type === SCOUT) {
-          if (!marks.length || Math.random() < 0.3) {          // nothing known (or feeling curious): go look
+          if (grown && (!marks.length || Math.random() < 0.3)) {   // nothing known (or feeling curious): go look
             a.state = EXPLORE; a.timer = ((5 + Math.random() * 10) * MIN) | 0;   // [borrowed: trips of 1.5–47 min, 13 on average]
             a.trail = [i]; a.tmap = new Map([[i, 0]]); a.hx = Math.random() < 0.5 ? -1 : 1;
           } else a.timer = restTime() | 0;
         } else if (a.type === SOLDIER) {
+          if (!grown) { a.timer = restTime() | 0; break; }
           a.state = PATROL; a.post = pickPost(); a.timer = 3000 + ((Math.random() * 2000) | 0);
         } else {
-          const wantFood = marks.length > 0 && stored < storeCells.length * 0.9;
+          const wantFood = grown && marks.length > 0 && stored < storeCells.length * 0.9;
           const p = cfg.dig * (0.5 + a.dil) * Math.max(0, 1 - tunnelCells / CAP);   // nothing else to do: dig
           if (wantFood && Math.random() < 0.75) {
             a.state = FORAGE; a.timer = ((5 + Math.random() * 10) * MIN) | 0; a.stepsHome = 0;
@@ -667,7 +689,7 @@ function trackPath(a, path, dir) {
 }
 
 // ───────────────────────── fog of war ─────────────────────────
-// Above ground an ant lights a circle (slice of sky + the top of the ground).
+// Above ground an ant lights a tall strip: the ground at its feet and all of the sky over it.
 // Underground it lights the open tunnel cells nearby plus a RIM-cell margin of dirt around each of them.
 const RIM = 2;
 const rimDone = new Uint8Array(W * H);    // tunnel cells whose rim has been marked explored
@@ -675,27 +697,40 @@ const stamped = new Uint32Array(W * H);   // which tunnel cells already lit thei
 let pass = 0;                              // bumped once per batch of reveals (a frame, or a few ticks)
 function revealAt(x0, y0, rAbove, rUnder, setVis) {
   const under = grid[y0 * W + x0] === TUNNEL && y0 > surf[x0];
-  const r = under ? rUnder : rAbove, r2 = r * r + 1;
+  if (!under) { revealStrip(x0, rAbove, setVis); return; }
+  const r = rUnder, r2 = r * r + 1;
   const ya = Math.max(0, y0 - r), yb = Math.min(H - 1, y0 + r), xa = Math.max(0, x0 - r), xb = Math.min(W - 1, x0 + r);
   for (let y = ya; y <= yb; y++) {
     const dy2 = (y - y0) * (y - y0);
     for (let x = xa; x <= xb; x++) {
       if ((x - x0) * (x - x0) + dy2 > r2) continue;
       const c = y * W + x;
-      if (under) {
-        if (grid[c] !== TUNNEL || stamped[c] === pass) continue;   // many ants share the same cells
-        stamped[c] = pass;
-        if (!setVis) { if (rimDone[c]) continue; rimDone[c] = 1; }   // its rim is already on the map for good
-        const y1 = Math.max(0, y - RIM), y2 = Math.min(H - 1, y + RIM), x1 = Math.max(0, x - RIM), x2 = Math.min(W - 1, x + RIM);
-        for (let yy = y1; yy <= y2; yy++)
-          for (let xx = x1; xx <= x2; xx++) {
-            explored[yy * W + xx] = 1; if (setVis) vis[yy * W + xx] = 1;
-          }
-      } else if (y <= surf[x] + 2) {
-        explored[c] = 1; if (setVis) vis[c] = 1;
-      }
+      if (grid[c] !== TUNNEL || stamped[c] === pass) continue;   // many ants share the same cells
+      stamped[c] = pass;
+      if (!setVis) { if (rimDone[c]) continue; rimDone[c] = 1; }   // its rim is already on the map for good
+      const y1 = Math.max(0, y - RIM), y2 = Math.min(H - 1, y + RIM), x1 = Math.max(0, x - RIM), x2 = Math.min(W - 1, x + RIM);
+      for (let yy = y1; yy <= y2; yy++)
+        for (let xx = x1; xx <= x2; xx++) { explored[yy * W + xx] = 1; if (setVis) vis[yy * W + xx] = 1; }
     }
   }
+}
+// Above ground an ant sees a tall strip: the ground at its feet and all of the sky over it.
+function revealStrip(x0, half, setVis) {
+  const xa = Math.max(0, x0 - half), xb = Math.min(W - 1, x0 + half);
+  for (let x = xa; x <= xb; x++) {
+    const bottom = Math.min(H - 1, surf[x] + 2);
+    for (let c = x, y = 0; y <= bottom; y++, c += W) { explored[c] = 1; if (setVis) vis[c] = 1; }
+  }
+}
+// Places that stay lit with no ant there: an entrance once a mound has been built by it,
+// and every seed patch a scout has flagged.
+function lightPlaces() {
+  for (const e of ENTR) {
+    let mound = false;
+    for (let x = Math.max(1, e.x - 8); x <= Math.min(W - 2, e.x + 8) && !mound; x++) mound = topY(x) < surf[x];
+    if (mound) revealStrip(e.x, 14, true);
+  }
+  for (const m of marks) revealStrip(m.x, 8, true);
 }
 const revealAnt = (a, setVis) => revealAt(a.x, a.y, a.type === SCOUT ? 12 : a.type === SOLDIER ? 7 : 5, 4, setVis);
 const revealQueen = setVis => revealAt(queen.x, queen.y, 5, 5, setVis);
@@ -771,7 +806,7 @@ function spiderTick(sp) {
     for (const a of ants) { const d = (a.x - sp.x) ** 2 + (a.y - sp.y) ** 2; if (d < bd && a.life > 0) { bd = d; victim = a; } }
     if (victim) {
       sp.cd = 60;
-      if (victim.type !== SOLDIER || Math.random() < 0.3) { victim.life = 0; lostToSpiders++; }
+      if (victim.type !== SOLDIER || Math.random() < 0.3) { victim.life = 0; victim.cause = 'spider'; lostToSpiders++; }
     } else if (QUEEN_MORTAL && !queen.dead && Math.abs(queen.x - 0.5 - sp.x) <= 4 && Math.abs(queen.y - sp.y) <= 2) {
       sp.cd = 60; queen.hp -= 4;
       if (queen.hp <= 0) queen.dead = true;
@@ -877,6 +912,7 @@ function dropEgg(a) {
 
 function queenTick() {
   if (queen.hp < QUEEN_HP && !queen.dead) queen.hp += 0.004;
+  if (!queen.dead && ++queen.age > queen.maxAge) queen.dead = true;      // old age, after many years
   if (queen.dead) return;                     // no more eggs
   if (queen.cd > 0) queen.cd--;
   else if (stored >= EGG_COST + RESERVE && eggs.length < nurseryCells.length &&
@@ -966,7 +1002,17 @@ function simTick() {
   if (exitDirty && tick % 5 === 0) computeExit();
   if (project && project.dirty && tick % 5 === 0) { bfs(project.dist, [project.tip]); project.dirty = false; }
   if (project && tick - project.t0 > 3 * DAY) finishProject(project);   // don't let a stalled dig drag on forever
-  for (const a of ants) { stepAnt(a); a.life--; }
+  for (const a of ants) {
+    stepAnt(a); a.life--; a.age++;
+    if (a.age > a.maxAge) { a.life = 0; a.cause = 'old'; continue; }
+    if (a.age < FORAGE_AGE) continue;
+    // Outside workers are lost at a steady daily rate, to fights, lizards and the heat. The loss is
+    // decided here and happens the next time the ant is out on the surface, away from the entrance.
+    if (!a.doomed) { if (Math.random() < OUTSIDE_DEATHS / DAY) a.doomed = true; }
+    else if (grid[a.y * W + a.x] === AIR && Math.abs(a.x - ENTR[0].x) > 12 && Math.abs(a.x - ENTR[1].x) > 12) {
+      a.life = 0; a.cause = 'outside';
+    }
+  }
   if (cfg.spiders && --spiderTimer <= 0) {
     if (spiders.length < spiderCap()) spawnSpider();
     spiderTimer = ((2 + Math.random() * 2) * DAY) | 0;          // one every two to four days
@@ -982,7 +1028,13 @@ function simTick() {
     if (inside) bfs(spiderDist, [inside.y * W + inside.x]);
   }
   let n = 0;
-  for (const a of ants) { if (a.life > 0) ants[n++] = a; else { died++; dropEgg(a); } }
+  for (const a of ants) {
+    if (a.life > 0) { ants[n++] = a; continue; }
+    died++; dropEgg(a);
+    if (a.cause === 'outside') diedOutside++; else if (a.cause === 'old') diedOld++; else if (a.cause !== 'spider') diedHungry++;
+    corpses.push({ x: a.x, y: a.y, t: tick });
+  }
+  if (corpses.length && (tick - corpses[0].t > CORPSE_TIME || corpses.length > 300)) corpses.shift();
   ants.length = n;
   queenTick();
   marksTick();
@@ -1006,7 +1058,7 @@ function simTick() {
 // The colony is kept in the browser's own storage on this computer, so it is still there
 // next time. When the page has been closed or hidden, the colony lives through the time it
 // missed, up to CATCHUP_MAX, by running the same simulation quickly.
-const SAVE_KEY = 'ant-colony-save', SAVE_VERSION = 1;
+const SAVE_KEY = 'ant-colony-save', SAVE_VERSION = 2;   // version 1 had no ages; it still loads
 const SAVE_EVERY = 60 * 1000;                 // ms between automatic saves
 const CATCHUP_MAX = 3 * 24 * 3600 * 1000;     // ms of absence the colony lives through; anything longer is skipped
 let lastSave = 0, saveProblem = '';
@@ -1031,7 +1083,8 @@ function saveState() {
     version: SAVE_VERSION, savedAt: Date.now(), W, H,
     grid: pack(grid), food: pack(food), tint: pack(tint), surf: pack(surf), explored: pack(explored),
     n: { stored, delivered, tunnelCells, tick, born, died, moundCells, chambers,
-         spiderTimer, spidersKilled, lostToSpiders, threat, alarm },
+         spiderTimer, spidersKilled, lostToSpiders, threat, alarm, diedOutside, diedOld, diedHungry },
+    corpses,
     NEST: { ...NEST }, QHOME: { ...QHOME }, ENTR: ENTR.map(e => ({ ...e })), queen: { ...queen },
     storeCells, nurseryCells, slotTaken: Array.from(slotTaken),
     eggs, marks, spiders,
@@ -1045,10 +1098,12 @@ function saveState() {
 
 // Put a saved colony back. Throws if the data is not a save this version can read.
 function loadState(d) {
-  if (!d || d.version !== SAVE_VERSION || d.W !== W || d.H !== H) throw new Error('not a save this version can read');
+  if (!d || (d.version !== 1 && d.version !== SAVE_VERSION) || d.W !== W || d.H !== H) throw new Error('not a save this version can read');
   unpack(d.grid, grid); unpack(d.food, food); unpack(d.tint, tint); unpack(d.surf, surf); unpack(d.explored, explored);
   ({ stored, delivered, tunnelCells, tick, born, died, moundCells, chambers,
-     spiderTimer, spidersKilled, lostToSpiders, threat, alarm } = d.n);
+     spiderTimer, spidersKilled, lostToSpiders, threat, alarm, diedOutside, diedOld, diedHungry } =
+     { diedOutside: 0, diedOld: 0, diedHungry: 0, ...d.n });
+  corpses = d.corpses || [];
   Object.assign(NEST, d.NEST); Object.assign(QHOME, d.QHOME); Object.assign(queen, d.queen);
   ENTR.forEach((e, k) => Object.assign(e, d.ENTR[k]));
   storeCells = d.storeCells; nurseryCells = d.nurseryCells; slotTaken = Uint8Array.from(d.slotTaken);
@@ -1056,7 +1111,9 @@ function loadState(d) {
   eggs = d.eggs; marks = d.marks; spiders = d.spiders;
   ants = d.ants.map(o => {
     const a = { ...o, egg: o.egg >= 0 ? eggs[o.egg] : null, mark: o.mark >= 0 ? marks[o.mark] : null,
-                tmap: o.trail ? new Map(o.trail.map((c, i) => [c, i])) : null, tcell: -1, rx: -1, ry: -1 };
+                tmap: o.trail ? new Map(o.trail.map((c, i) => [c, i])) : null, tcell: -1, rx: -1, ry: -1,
+                // a colony saved before ants had ages is given the ages of a summer colony
+                age: o.age ?? startAge(), maxAge: o.maxAge ?? oldAge(), doomed: !!o.doomed, cause: '' };
     // an ant caught half way through something that was not saved goes home and starts again
     if ((a.state === FETCH || a.state === CARRYEGG) && !a.egg) a.state = RETURN;
     if (a.state === EXPLORE && !a.trail) a.state = RETURN;
@@ -1161,6 +1218,7 @@ const EGGC = rgb(244, 240, 226), EGGSOON = rgb(255, 226, 140);
 const QUEEN1 = rgb(120, 24, 48), QUEEN2 = rgb(176, 48, 78);
 const nurPal = [0, 1, 2, 3].map(n => rgb(120 + n * 2, 88 + n * 2, 66 + n * 2));
 const ANTHUNGRY = rgb(160, 160, 150);
+const CALLOWC = rgb(176, 132, 84), CORPSEC = rgb(84, 76, 70);
 const ANTBODY = rgb(40, 28, 20);
 const SCOUTC = rgb(204, 92, 28);
 const SOLDC = rgb(92, 24, 20), SOLDHEAD = rgb(160, 44, 32);
@@ -1185,6 +1243,7 @@ function draw() {
     vis.fill(0); pass++;
     for (const a of ants) revealAnt(a, true);
     revealQueen(true);
+    lightPlaces();
     if (mouse.down) revealCircle(mouse.x, mouse.y, 4);    // lit only while you're pouring
   }
   for (let y = 0; y < H; y++) {
@@ -1221,15 +1280,17 @@ function draw() {
   }
   // sizes: scout 1×1, worker 2×1, soldier 3×1 (head first, body trailing), queen 4×2.
   // moving straight up/down they stand upright, as if climbing the tunnel.
+  for (const d of corpses) put(d.x, d.y, CORPSEC);
   for (const a of ants) {
-    const hungry = a.life < HUNGRY;
+    const hungry = a.life < HUNGRY || a.age < CALLOW;   // drawn in one plain colour: grey if hungry, pale if newly adult
+    const PLAIN = a.life < HUNGRY ? ANTHUNGRY : CALLOWC;
     const bx = a.vert ? 0 : -a.face, by = a.vert ? -a.vface : 0;      // step from head toward tail
     if (a.type === SOLDIER) {
-      put(a.x, a.y, hungry ? ANTHUNGRY : SOLDHEAD);
-      put(a.x + bx, a.y + by, hungry ? ANTHUNGRY : SOLDC); put(a.x + 2 * bx, a.y + 2 * by, hungry ? ANTHUNGRY : SOLDC);
+      put(a.x, a.y, hungry ? PLAIN : SOLDHEAD);
+      put(a.x + bx, a.y + by, hungry ? PLAIN : SOLDC); put(a.x + 2 * bx, a.y + 2 * by, hungry ? PLAIN : SOLDC);
     } else if (a.type === WORKER) {
-      put(a.x, a.y, hungry ? ANTHUNGRY : ANTC); put(a.x + bx, a.y + by, hungry ? ANTHUNGRY : ANTBODY);
-    } else put(a.x, a.y, hungry ? ANTHUNGRY : SCOUTC);
+      put(a.x, a.y, hungry ? PLAIN : ANTC); put(a.x + bx, a.y + by, hungry ? PLAIN : ANTBODY);
+    } else put(a.x, a.y, hungry ? PLAIN : SCOUTC);
     const cx = a.vert ? a.x + a.face : a.x, cy = a.vert ? a.y : a.y - 1;   // what it carries
     if (a.carry) put(cx, cy, FOODC);
     else if (a.egg && a.egg.st === E_CARRIED) put(cx, cy, EGGC);
@@ -1392,9 +1453,10 @@ function hud() {
     `<span>food store <b>${stored}/${storeCells.length}</b></span>` +
     `<span>delivered <b>${delivered}</b></span>` +
     `<span>eggs <b>${eggs.filter(e => e.st < E_INCUB).length}</b> waiting · <b>${eggs.filter(e => e.st === E_INCUB).length}</b> incubating</span>` +
-    `<span>born <b>${born}</b> died <b>${died}</b></span>` +
+    `<span>working outside <b>${ants.reduce((k, a) => k + (a.age >= FORAGE_AGE), 0)}</b> · young <b>${ants.reduce((k, a) => k + (a.age < FORAGE_AGE), 0)}</b></span>` +
+    `<span>born <b>${born}</b> · died <b>${died}</b>: outside <b>${diedOutside}</b>, hunger <b>${diedHungry}</b>, old age <b>${diedOld}</b></span>` +
     `<span>tunnels <b>${tunnelCells}</b> rooms <b>${chambers}</b>${project ? ` (digging one: ${project.cells.length - project.left}/${project.cells.length})` : ''} mound <b>${moundCells}</b></span>` +
-    (queen.dead ? `<span style="color:#e0645a">the queen is dead — no more eggs</span>` : '') +
+    (queen.dead ? `<span style="color:#e0645a">the queen is dead — no more eggs</span>` : `<span>queen <b>${Math.floor(queen.age / (365 * DAY))}</b> year${queen.age < 2 * 365 * DAY ? '' : 's'} old</span>`) +
     (ants.length === 0 && !eggs.some(e => e.st === E_INCUB) ? `<span style="color:#e0645a">no workers left — press R</span>` : '');
 }
 
