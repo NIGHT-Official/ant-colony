@@ -17,7 +17,7 @@ the page says so).
 
 | Input | Action |
 |---|---|
-| `T` | Time: real time, fast (1 second = 1 minute), very fast (1 second = 10 minutes) |
+| `T` | Time: real time, fast (1 second = 1 minute), very fast (1 second = 10 minutes), fastest (1 second = 1 hour) |
 | `W` `A` `S` `D` / arrows (Shift = fast) | Move the view |
 | Mouse wheel (Shift = sideways), right-drag | Move the view |
 | `+` `−`, or Ctrl + wheel | Zoom |
@@ -162,6 +162,7 @@ Both need Node.js.
   add `--colony` to start from a young colony moving in).
   A run stops itself after 14 minutes.
 - `node tools/test-save.js` checks that a colony can be saved and put back exactly, and carries on afterwards.
+- `node tools/test-founding.js` checks that a founding queen ends up sealed inside her chamber.
 
 ### Measurements
 

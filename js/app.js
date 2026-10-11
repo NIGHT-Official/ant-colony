@@ -273,6 +273,13 @@ function drawBrood(e) {
 }
 
 const hex = c => `rgb(${c & 255},${(c >> 8) & 255},${(c >> 16) & 255})`;
+// The queen's legs move only while she is actually going somewhere: not while she bites at a
+// pellet, and not while she waits out the night.
+const qSeen = { x: -1, y: -1, at: 0 };
+function queenWalking() {
+  if (queen.x !== qSeen.x || queen.y !== qSeen.y) { qSeen.x = queen.x; qSeen.y = queen.y; qSeen.at = performance.now(); }
+  return performance.now() - qSeen.at < 350;
+}
 function drawAnts() {
   const xa = camX - 10, xb = camX + vw + 10, ya = camY - 10, yb = camY + vh + 10;
   const seen = (x, y) => x >= xa && x <= xb && y >= ya && y <= yb && (!cfg.fog || vis[y * W + x]);
@@ -287,7 +294,7 @@ function drawAnts() {
   if (seen(queen.x, queen.y)) {
     const busy = queen.stage === 'dig' || queen.stage === 'settle';     // while founding she walks and carries like a worker
     drawAnt(queen.x, queen.y, busy ? queen.dx : queen.face, busy ? queen.dy : 0, queen.face, QUEEN_BODY, queen.dead ? [128, 120, 116] : [150, 62, 36],
-            busy && !queen.tcell >= 0 ? 2 : 1, queen.load ? hex(sandPal[queen.shade * 4 + 1]) : null);
+            queenWalking() ? 2 : 1, queen.load ? hex(sandPal[queen.shade * 4 + 1]) : null);
   }
 }
 
@@ -529,8 +536,9 @@ function frame(now) {
     owed += Math.min(real, 1000) / 1000 * TPS * RATES[cfg.rate];
     const t0 = performance.now();
     let n = 0;
-    while (owed >= 1 && performance.now() - t0 < 12) {       // at most 12 ms of simulating per frame
-      for (let k = 0; k < 16 && owed >= 1; k++) { simTick(); owed--; n++; }
+    const budget = cfg.rate === RATES.length - 1 ? 26 : 12;   // ms of simulating per frame; the fastest rate may drop frames
+    while (owed >= 1 && performance.now() - t0 < budget) {
+      for (let k = 0; k < 64 && owed >= 1; k++) { simTick(); owed--; n++; }
     }
     if (owed > TPS * RATES[cfg.rate]) {                      // more than a second behind: this rate is out of reach
       behind = n / (Math.min(real, 1000) / 1000 * TPS || 1); owed = 0;

@@ -19,8 +19,8 @@ const SEC = TPS, MIN = 60 * SEC, HOUR = 60 * MIN;                    // real sec
 // seasons. Everything counted in days (growing up, ageing, eating, the seasons) uses DAY below.
 const CALENDAR = 4;
 const DAY = 24 * HOUR / CALENDAR;                                    // one day of the colony's calendar: six of our hours
-const RATES = [1, 60, 600];                                          // real time, and two fast-forwards
-const RATE_NAME = ['real time', 'fast: 1 s = 1 min', 'very fast: 1 s = 10 min'];
+const RATES = [1, 60, 600, 3600];                                    // real time, and three fast-forwards
+const RATE_NAME = ['real time', 'fast: 1 s = 1 min', 'very fast: 1 s = 10 min', 'fastest: 1 s = 1 hour'];
 
 // ───────────────────────── the world ─────────────────────────
 const W = 2000;          // 3.2 m of ground, a slice of the colony's territory
@@ -1073,8 +1073,10 @@ function foundingTick() {
       if (plan.frontier.has(c) && grid[c] === SAND) { q.tcell = c; q.work = 0; return; }
     }
     descend(q, digMap);
-  } else if (q.stage === 'settle') {           // down to her chamber, then close the door behind her
-    if (nurseMap.d[qi] > 0 && nurseMap.d[qi] < BIG) { descend(q, nurseMap); return; }
+  } else if (q.stage === 'settle') {           // back inside, down to her chamber, then close the door behind her
+    if (!inside) { chooseMove(q, 0, 0, ENTR.x, ENTR.y); return; }
+    if (nurseMap.d[qi] >= BIG) return;         // the routes are being worked out: wait a moment
+    if (nurseMap.d[qi] > 0) { descend(q, nurseMap); return; }
     plug = mouthCells();
     for (const c of plug) grid[c] = PLUG;
     sealed = true; mapsDirty = true;
