@@ -58,8 +58,14 @@ saved and leaves your real colony alone.
   - **Medium** (amber, 1 to 1.4 mm): opened more slowly. Two meals each.
   - **Large** (dark red-brown, 1.4 mm and up): cannot be opened. They sit in the store until they sprout,
     then are eaten at once. Five meals each. They may fill up to 70% of the store.
-- **Types**, picked by the colony for each egg: **scouts** find seed patches and flag them, **workers** forage,
-  carry brood and dig, **soldiers** guard the entrance.
+- **Castes and jobs.** A caste is the body an ant is born with: most workers are **minors**, and about 7% are
+  large-headed **majors**. A job is what a worker does at its age, and it only ever moves up the nest:
+  **callow** (pale, new) → **brood care** deep down → **transfer worker** in the middle, carrying seeds down
+  to the store and sand up → **forager** at the top and outside. A forager's trips are mostly for seeds, with
+  some patrols (looking for unflagged patches) and spells on guard. Majors stay in the store and speed up the
+  opening of seeds. There are no soldiers: defence falls to the older workers at the surface.
+- **Seeds are handed on.** Foragers leave seeds in the top chamber and transfer workers carry them down.
+- **The ants are drawn as ants,** rusty red like the real species, pale when new and darker with age.
 - **Fog:** unexplored is black, explored is dim, and ants light up what they see. Above ground an ant sees a
   tall strip of ground and sky. The entrance and every flagged seed patch stay lit.
 - **Spiders** are a leftover from the game this started as, not part of the research. They are off by default.
@@ -87,6 +93,9 @@ The research is in `docs/research/`, with its sources. In `js/sim.js` every numb
 | Worker old age | 365–455 days | Research, an estimate |
 | Queen lifespan | 15–30 years | Borrowed |
 | Seeds per trip | 1 | Research |
+| Majors | 7% of workers born; they stay inside | Research: 5–7%, about 10% in July |
+| Start of transfer work | 25 days old | **Guess**, from the shares of workers in each job |
+| Patrol and guard trips | a quarter and a twelfth of a forager's trips | **Guess.** Patrollers are borrowed from the red harvester ant |
 | Seed kinds and opening rates | see above | Research |
 | Scent trail | half gone in 12 minutes | Research: fades in 15–30 minutes |
 | Food per ant | one meal every 2 days | **Guess.** Nobody has measured it |
@@ -96,7 +105,7 @@ The research is in `docs/research/`, with its sources. In `js/sim.js` every numb
 
 **Not modelled yet,** although the research covers it: nest moves (so the nest never grows), sand passed up
 in a relay, sand left underground, the entrance closed at night, day and night, winter and the seasons, the
-full sequence of jobs by age, seeds carried down to the store by a second group, majors, insect food, the
+long-lived autumn workers, midden workers, foraging set off by returning patrollers, insect food, the
 husk heap, carrying the dead away, and the mating flight.
 
 ## Files
@@ -125,3 +134,6 @@ Both need Node.js.
   days, putting all 1,425 pellets on the disc. 33 and 32 ants at the end, none dead, the store never empty,
   about 42 seeds carried home a day. Five days is too short to say anything about the long run. The
   simulation ran about 5,600 times faster than real time, and a save is about 550 KB.
+- **2026-10-10, with castes and jobs by age** (2 colonies, 5 simulated days): nests dug in 4.2 days each;
+  29 and 30 ants at the end, 2 and 1 lost outside, none starved, about 44 seeds carried home a day. It ran
+  about 3,300 times faster than real time, slower than before because more ants are out at once.

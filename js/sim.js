@@ -62,8 +62,28 @@ const CALLOW = 10 * DAY;      // a new adult is pale for its first days [researc
 const CORPSE_TIME = DAY;      // a dead ant lies where it fell this long [guess; nestmates carrying the dead away is not modelled]
 const oldAge = () => (365 + Math.random() * 90) * DAY;             // [research: a worker lives "probably somewhat more than a year"]
 const queenLife = () => (15 + Math.random() * 15) * 365 * DAY;     // [borrowed: 15–30 years]
-// Ages for a colony met in summer: about 40% already work outside [research: 37–40% forage in summer].
-const startAge = () => Math.random() < 0.4 ? FORAGE_AGE + Math.random() * 45 * DAY : Math.random() * FORAGE_AGE;
+
+// ── castes and jobs ── (docs/research/roles-behavior.md)
+// A caste is the body an ant is born with. The workers come in two: minors, and a few large-headed
+// majors. A job is what a worker is doing at its age; it moves up through the nest as it gets older
+// and never goes back:
+//   callow       pale and new, deep in the nest
+//   brood care   deep in the nest, carrying and tending the brood
+//   transfer     the middle of the nest: carries seeds down to the store and sand up
+//   forager      the top chamber and outside: collects seeds, and some trips are patrols or guard duty
+// Majors keep to the store, where they speed up the opening of seeds. They do not fight: there is no
+// soldier caste, and defence falls to the older workers at the surface. [research]
+const MINOR = 0, MAJOR = 1;
+const MAJOR_SHARE = 0.07;     // of workers born [research: 5–7% of workers, about 10% in July]
+const NURSE_UNTIL = 25 * DAY; // brood care ends and transfer work begins [guess, from 35% of workers deep, 25% transfer, 40% foragers]
+const T_CALLOW = 0, T_BROOD = 1, T_TRANSFER = 2, T_FORAGER = 3, T_MAJOR = 4;
+const TASK_NAME = ['Callows', 'Brood care', 'Transfer workers', 'Foragers', 'Majors'];
+const TASK_ROLE = ['new adults, still pale', 'tend and carry the brood', 'seeds down, sand up', 'collect seeds · patrol · guard', 'open seeds in the store'];
+const taskOf = a => a.caste === MAJOR ? T_MAJOR : a.age < CALLOW ? T_CALLOW : a.age < NURSE_UNTIL ? T_BROOD : a.age < FORAGE_AGE ? T_TRANSFER : T_FORAGER;
+const newCaste = () => Math.random() < MAJOR_SHARE ? MAJOR : MINOR;
+// Ages for a colony met in summer [research: about 40% foragers, 25% transfer workers, the rest deep inside].
+const startAge = () => { const r = Math.random();
+  return r < 0.4 ? FORAGE_AGE + Math.random() * 45 * DAY : r < 0.65 ? NURSE_UNTIL + Math.random() * (FORAGE_AGE - NURSE_UNTIL) : Math.random() * NURSE_UNTIL; };
 
 // ── seeds ── (docs/research/seeds-diet-sizes.md)
 // Three kinds, told apart by width, because width decides what the ants can do with a seed:
@@ -99,7 +119,7 @@ const SHAFT_HALF = 16;        // the zigzag swings this far each side of the ent
 const CHAMBER_H  = 6;         // a chamber is about 1 cm high [research]
 const AREA_FALL  = 0.68;      // each tenth of the depth holds this share of the tenth above it [research: 25–40% less]
 const PELLET_TIME = 18 * MIN; // work to bite one pellet loose [guess, set so that a nest takes 3–6 days as in the research]
-const DIG_OLD = 0.82, DIG_YOUNG = 0.19;   // share of outside-age and of younger workers that dig [research]
+const DIG_OLD = 0.82, DIG_YOUNG = 0.19;   // share of the older (transfer and forager) and of the younger workers that dig [research]
 const MOUND_H = 5;            // the sand disc is at most this many cells deep [research: about 1 cm]
 
 // ───────────────────────── state ─────────────────────────
@@ -107,6 +127,7 @@ let tick = 0;
 let ants = [], eggs = [], marks = [], spiders = [], corpses = [];
 let stored = 0;                            // meals ready to eat
 let pile = [0, 0, 0, 0];                   // unopened seeds in the store, by kind
+let dropped = [0, 0, 0, 0];                // seeds left in the top chamber by foragers, waiting to be carried down
 let opening = [0, 0, 0, 0];                // parts of a seed opened so far, by kind
 let husks = 0, wasted = 0;                 // seed coats thrown out; large seeds brought home with no room for them
 let delivered = 0, born = 0, died = 0, diedOutside = 0, diedOld = 0, diedHungry = 0;
@@ -120,16 +141,14 @@ let nurseryCells = [], slotTaken = [], storeCells = [], topCells = [];
 let nurseryRooms = '';                     // which chambers the nursery is in, as text, to notice a change
 const nurserySet = new Uint8Array(N);      // 1 = nursery floor
 const E_LOOSE = 0, E_CARRIED = 2, E_INCUB = 3;
-const SCOUT = 0, WORKER = 1, SOLDIER = 2;
-const TYPE_NAME = ['Scouts', 'Workers', 'Soldiers'];
-const TYPE_ROLE = ['find seeds, flag them', 'forage · nurse · dig', 'guard the entrance'];
-const inStore = () => stored + pile[SMALL] + pile[MEDIUM] + pile[LARGE];   // everything taking up room
+const inStore = () => stored + pile[SMALL] + pile[MEDIUM] + pile[LARGE];   // everything taking up room in the store
+const waiting = () => dropped[SMALL] + dropped[MEDIUM] + dropped[LARGE];    // seeds in the top chamber
+const storeApart = () => storeCells !== topCells;                           // is there a store chamber yet?
 
 // spiders: a leftover from the game this started as, not part of the research; off unless switched on
 const SPIDER_HP = 12, SPIDER_LIFE = 30 * MIN, QUEEN_HP = 60, QUEEN_MORTAL = true;
-const THREAT_FADE = 0.5 ** (1 / (6 * HOUR));
 const spiderCap = () => ants.length >= 20 ? 2 : 1;
-let spiderTimer = DAY, spidersKilled = 0, lostToSpiders = 0, threat = 0, alarm = 0;
+let spiderTimer = DAY, spidersKilled = 0, lostToSpiders = 0, alarm = 0;
 
 const inb = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
 const DX  = [1, 1, 0, -1, -1, -1, 0, 1];
@@ -332,10 +351,10 @@ function genWorld() {
   scentS[HOME].fill(0); scentS[FOOD].fill(0);
   for (const m of [exitMap, topMap, midMap, nurseMap, digMap, eggMap, spiderMap]) { m.d.fill(BIG); m.n = 0; }
   tick = 0; ants = []; eggs = []; marks = []; spiders = []; corpses = []; falling = [];
-  stored = 20; pile = [0, 0, 0, 0]; opening = [0, 0, 0, 0]; husks = 0; wasted = 0;   // [research: one young colony held 20 seeds]
+  stored = 20; pile = [0, 0, 0, 0]; dropped = [0, 0, 0, 0]; opening = [0, 0, 0, 0]; husks = 0; wasted = 0;   // [research: one young colony held 20 seeds]
   delivered = born = died = diedOutside = diedOld = diedHungry = 0;
   tunnelCells = moundCells = lying = 0;
-  spiderTimer = DAY; spidersKilled = lostToSpiders = 0; threat = alarm = 0;
+  spiderTimer = DAY; spidersKilled = lostToSpiders = 0; alarm = 0;
   nurseryCells = []; slotTaken = []; storeCells = []; topCells = []; nurseryRooms = '';
 
   // Sandhill ground: gently rolling, flat around the nest, and no stones [research].
@@ -362,21 +381,21 @@ function genWorld() {
   const q = onFloor[onFloor.length >> 1];
   Object.assign(queen, { x: q % W, y: (q / W) | 0, px: -1, py: -1, cd: HOUR, hp: QUEEN_HP, dead: false,
                          age: 365 * DAY, maxAge: queenLife() });   // she is a year old when we meet her
-  for (let n = 0; n < START_ANTS; n++) spawnAnt(fedFor(), undefined, undefined, pickType(START_ANTS), startAge());
+  for (let n = 0; n < START_ANTS; n++) spawnAnt(fedFor(), undefined, undefined, n < 2 ? MAJOR : MINOR, startAge());   // two majors in thirty
   for (let k = 0; k < START_BROOD && k < nurseryCells.length; k++) {      // brood at every stage of growing up
     const c = nurseryCells[k];
     slotTaken[k] = 1;
-    eggs.push({ x: c % W, y: (c / W) | 0, st: E_INCUB, slot: k, timer: (Math.random() * HATCH) | 0, type: pickType() });
+    eggs.push({ x: c % W, y: (c / W) | 0, st: E_INCUB, slot: k, timer: (Math.random() * HATCH) | 0, caste: newCaste() });
   }
   for (let x = ENTR.x - 60; x <= ENTR.x + 60; x++)       // you start with a view of the ground around the entrance
     for (let y = 0; y <= surf[x] + 2; y++) explored[y * W + x] = 1;
 }
 
 // ───────────────────────── ants ─────────────────────────
-const FORAGE = 0, RETURN = 1, REST = 2, DIGGO = 3, DUMP = 5, FETCH = 6, CARRYEGG = 7,
+const FORAGE = 0, RETURN = 1, REST = 2, DIGGO = 3, HAUL = 4, DUMP = 5, FETCH = 6, CARRYEGG = 7,
       EXPLORE = 8, PATROL = 10, DEFEND = 12;
 
-function spawnAnt(life = fedFor(), x, y, type = WORKER, age = 0) {
+function spawnAnt(life = fedFor(), x, y, caste = MINOR, age = 0) {
   if (x === undefined) {
     const c = topCells[(Math.random() * topCells.length) | 0];
     x = c % W; y = (c / W) | 0;
@@ -385,8 +404,8 @@ function spawnAnt(life = fedFor(), x, y, type = WORKER, age = 0) {
   ants.push({
     x, y, px: -1, py: -1, dx: DX[d], dy: DY[d], face: 1, vert: false, vface: 1,
     state: REST, timer: (Math.random() * 2 * MIN) | 0, sleep: 0,
-    type, life, age, maxAge: oldAge(),
-    carry: 0, load: 0, shade: 0, egg: null, mark: null,
+    caste, life, age, maxAge: oldAge(),
+    carry: 0, hauled: false, load: 0, shade: 0, egg: null, mark: null,
     stepsHome: 0, stepsFood: 0, hx: 1, post: 0,
     dig: Math.random(),                    // whether it is one of the diggers: see wantsToDig()
     work: 0, tcell: -1, dropX: 0,
@@ -394,7 +413,7 @@ function spawnAnt(life = fedFor(), x, y, type = WORKER, age = 0) {
     doomed: false, cause: '',              // doomed: will not come back from its next time outside
   });
 }
-const wantsToDig = a => a.dig < (a.age >= FORAGE_AGE ? DIG_OLD : DIG_YOUNG);
+const wantsToDig = a => a.caste === MINOR && a.dig < (a.age >= NURSE_UNTIL ? DIG_OLD : DIG_YOUNG);
 
 // Can an ant stand here?  Tunnels always; open air only if it's touching the ground, a tunnel
 // or a seed (so ants crawl along the surface but don't walk through the sky).
@@ -473,17 +492,18 @@ function descend(a, map) {
   return true;
 }
 
-// Where an ant rests: the young deep in the nursery, the middle-aged among the stores, and the
-// outside workers in the top chamber [research: workers move up through the nest as they age].
-const homeMap = a => a.age < FORAGE_AGE * 0.6 ? nurseMap : a.age < FORAGE_AGE ? midMap : topMap;
+// Where an ant rests: callows and brood-care workers deep in the nursery, transfer workers and
+// majors among the stores, and foragers in the top chamber [research: workers move up as they age].
+const homeMap = a => a.caste === MAJOR ? midMap : a.age < NURSE_UNTIL ? nurseMap : a.age < FORAGE_AGE ? midMap : topMap;
+const defender = a => a.caste === MINOR && a.age >= FORAGE_AGE;      // the older workers at the surface
 
 function goHome(a) { a.state = RETURN; a.tcell = -1; a.work = 0; a.timer = 30 * MIN; }
 
 function stepAnt(a) {
   const i = a.y * W + a.x, inside = grid[i] === TUNNEL;
   if (spiders.length) {
-    if (a.type === SOLDIER) {                 // once the alarm is up, the whole guard turns out
-      if (alarm > 0 && (a.state === PATROL || a.state === REST || a.state === RETURN)) { a.state = DEFEND; a.sleep = 0; }
+    if (defender(a)) {                        // once the alarm is up, the workers at the surface turn out
+      if (alarm > 0 && (a.state === PATROL || a.state === REST || a.state === RETURN) && !a.carry) { a.state = DEFEND; a.sleep = 0; }
     } else if (a.state === FORAGE || a.state === EXPLORE || a.state === DIGGO) {
       const sp = nearestSpider(a);            // everyone else bolts for home when one gets close
       if (sp && (sp.x - a.x) ** 2 + (sp.y - a.y) ** 2 <= (inside ? 120 : 320)) goHome(a);
@@ -497,28 +517,30 @@ function stepAnt(a) {
     case REST: {                              // looked at about once a second; the ant sleeps in between
       a.sleep = TPS - 1; a.timer -= TPS;
       if (stored > 0 && a.life <= EAT_BELOW) { stored--; a.life += EAT_GAIN; }
-      if (a.type === WORKER && a.life > HUNGRY && Math.random() < 0.5 && eggs.some(e => e.st === E_LOOSE)) {
-        a.state = FETCH; a.timer = 10 * MIN; a.sleep = 0; return;         // nurse duty comes first
+      const task = taskOf(a);
+      if (task <= T_TRANSFER && a.life > HUNGRY && Math.random() < (task === T_TRANSFER ? 0.1 : 0.5) && eggs.some(e => e.st === E_LOOSE)) {
+        a.state = FETCH; a.timer = 10 * MIN; a.sleep = 0; return;         // brood comes first, and mostly for the young
       }
       if (Math.random() < 0.3) {              // shuffle about, staying in the room
         const d = (Math.random() * 8) | 0, nx = a.x + DX[d], ny = a.y + DY[d];
         if (inb(nx, ny) && grid[ny * W + nx] === TUNNEL && homeMap(a).d[ny * W + nx] <= 2) moveTo(a, nx, ny);
       }
       if (a.timer > 0) break;
-      const grown = a.age >= FORAGE_AGE;      // young ants keep to the nest [research]
       a.sleep = 0;
       if (plan.left > 0 && a.life > HUNGRY && wantsToDig(a) && Math.random() < 0.7) {
         a.state = DIGGO; a.timer = 30 * MIN; a.tcell = -1; a.work = 0;
-      } else if (a.type === SCOUT) {
-        if (grown && (!marks.length || Math.random() < 0.3)) {   // nothing known (or feeling curious): go look
+      } else if (task === T_FORAGER) {        // only the oldest workers leave the nest [research]
+        const r = Math.random();
+        if (!marks.length || r < 0.25) {      // a patrol: look for seed patches nobody has flagged [borrowed: patrollers]
           a.state = EXPLORE; a.timer = tripTime(); a.hx = Math.random() < 0.5 ? -1 : 1; a.stepsHome = 0;
+        } else if (r < 0.33) {                // a spell on guard at the entrance
+          a.state = PATROL; a.timer = ((5 + Math.random() * 4) * MIN) | 0;
+        } else if (inStore() + waiting() < storeCells.length * 0.95) {
+          a.state = FORAGE; a.timer = tripTime(); a.stepsHome = 0;
+          a.mark = marks[(Math.random() * marks.length) | 0];
         } else a.timer = restTime() | 0;
-      } else if (a.type === SOLDIER) {
-        if (grown) { a.state = PATROL; a.timer = ((5 + Math.random() * 4) * MIN) | 0; }
-        else a.timer = restTime() | 0;
-      } else if (grown && marks.length > 0 && inStore() < storeCells.length * 0.95) {
-        a.state = FORAGE; a.timer = tripTime(); a.stepsHome = 0;
-        a.mark = marks[(Math.random() * marks.length) | 0];
+      } else if (task === T_TRANSFER && waiting() > 0 && storeApart()) {
+        a.state = HAUL; a.timer = 20 * MIN;   // seeds are waiting in the top chamber: carry one down
       } else a.timer = restTime() | 0;        // nothing to do: loiter
       break;
     }
@@ -556,10 +578,14 @@ function stepAnt(a) {
       if (a.carry) {                         // seeds are dropped in the top chamber [research]
         if (topMap.d[i] <= 1) {
           const kind = a.carry;
-          a.carry = 0; delivered++;
+          a.carry = 0;
+          if (a.hauled) { a.hauled = false; dropped[kind]++; break; }   // a transfer worker that turned back: put it down again
+          delivered++;
           // A large seed with no room left for large seeds is dropped on the rubbish heap.
-          if (kind === LARGE && pile[LARGE] >= storeCells.length * LARGE_SHARE) wasted++;
-          else if (inStore() < storeCells.length) pile[kind]++;
+          if (kind === LARGE && pile[LARGE] + dropped[LARGE] >= storeCells.length * LARGE_SHARE) wasted++;
+          else if (inStore() + waiting() >= storeCells.length) wasted++;
+          else if (storeApart()) dropped[kind]++;          // left here; transfer workers carry it down [research]
+          else pile[kind]++;                               // no store chamber yet: this room is the store
         } else if (!descend(a, topMap)) a.carry = 0;
         break;
       }
@@ -620,6 +646,21 @@ function stepAnt(a) {
         }
       }
       if (a.tcell < 0 && !descend(a, digMap)) { a.timer -= TPS; a.sleep = TPS - 1; }   // no way there just now: wait
+      break;
+    }
+
+    case HAUL: {                              // transfer worker: carry a seed from the top chamber down to the store
+      if (--a.timer <= 0 || !inside) { goHome(a); return; }
+      if (!a.carry) {
+        if (!waiting()) { goHome(a); return; }
+        if (topMap.d[i] === 0) {
+          const kind = dropped[LARGE] ? LARGE : dropped[MEDIUM] ? MEDIUM : SMALL;
+          dropped[kind]--; a.carry = kind; a.hauled = true;
+        } else if (!descend(a, topMap)) goHome(a);
+      } else if (midMap.d[i] === 0) {
+        pile[a.carry]++; a.carry = 0; a.hauled = false;
+        if (!waiting() || Math.random() < 0.3) goHome(a);
+      } else if (!descend(a, midMap)) goHome(a);
       break;
     }
 
@@ -717,7 +758,8 @@ function revealStrip(x0, half, setVis) {
     for (let c = x, y = 0; y <= bottom; y++, c += W) { explored[c] = 1; if (setVis) vis[c] = 1; }
   }
 }
-const revealAnt = (a, setVis) => revealAt(a.x, a.y, a.type === SCOUT ? 26 : a.type === SOLDIER ? 15 : 11, setVis);
+const sightOf = a => a.state === EXPLORE ? 26 : a.state === PATROL ? 18 : 12;   // a patrolling ant looks further
+const revealAnt = (a, setVis) => revealAt(a.x, a.y, sightOf(a), setVis);
 
 // ───────────────────────── spiders ─────────────────────────
 function nearestSpider(a) {
@@ -729,14 +771,13 @@ function spawnSpider() {
   const left = Math.random() < 0.5, x = left ? 4 : W - 5;
   spiders.push({ x, y: ground[x] - 1, px: -1, py: -1, dx: left ? 1 : -1, dy: 0, face: left ? 1 : -1, vert: false, vface: 1,
                  hp: SPIDER_HP, cd: 2 * SEC, life: SPIDER_LIFE, hit: 0 });
-  threat = 1;                                 // the colony will breed more soldiers for a while
 }
 function spiderTick(sp) {
   if (--sp.life <= 0) return false;           // loses interest and wanders off
   if (sp.cd > 0) sp.cd--;
   if (sp.hit > 0) sp.hit--;
-  let n = 0;                                   // soldiers hit hard; workers and scouts swarm it for a little
-  for (const a of ants) if (Math.abs(a.x - sp.x) <= 4 && Math.abs(a.y - sp.y) <= 4) n += a.type === SOLDIER ? 1 : 0.25;
+  let n = 0;                                   // the older workers sting hard; the others do a little
+  for (const a of ants) if (Math.abs(a.x - sp.x) <= 4 && Math.abs(a.y - sp.y) <= 4) n += defender(a) ? 1 : 0.25;
   if (n && Math.random() < n * 0.2) { sp.hp--; sp.hit = 4; }
   if (sp.hp <= 0) { spidersKilled++; return false; }
   if (sp.cd <= 0) {                           // bite: the nearest ant within reach, or the queen
@@ -744,7 +785,7 @@ function spiderTick(sp) {
     for (const a of ants) { const d = (a.x - sp.x) ** 2 + (a.y - sp.y) ** 2; if (d < bd && a.life > 0) { bd = d; victim = a; } }
     if (victim) {
       sp.cd = 2 * SEC;
-      if (victim.type !== SOLDIER || Math.random() < 0.3) { victim.life = 0; victim.cause = 'spider'; lostToSpiders++; }
+      if (!defender(victim) || Math.random() < 0.5) { victim.life = 0; victim.cause = 'spider'; lostToSpiders++; }
     } else if (QUEEN_MORTAL && !queen.dead && Math.abs(queen.x - sp.x) <= 8 && Math.abs(queen.y - sp.y) <= 4) {
       sp.cd = 2 * SEC; queen.hp -= 4;
       if (queen.hp <= 0) queen.dead = true;
@@ -758,30 +799,6 @@ function spiderTick(sp) {
   } else if (inTunnel) { if (!descend(sp, nurseMap)) chooseMove(sp, 0, 0, queen.x, queen.y, 2); }   // inside: toward the brood
   else chooseMove(sp, 0, 0, ENTR.x, ENTR.y, 2);                // outside: toward the entrance
   return true;
-}
-
-// ───────────────────────── colony planning ─────────────────────────
-// How many of each type the colony wants for a population of T: [scouts, workers, soldiers]
-function targets(T) {
-  const known = marks.length > 0;           // once seeds are flagged, fewer scouts are needed
-  const sc = Math.min(6, Math.max(known ? 1 : 2, Math.round(T * (known ? 0.12 : 0.25))));
-  const so = Math.min(12, Math.max(2, Math.round(T * (0.15 + 0.25 * Math.min(1, threat)))));   // more guards while spiders are about
-  return [sc, Math.max(0, T - sc - so), so];
-}
-function typeCounts() {
-  const c = [0, 0, 0], pending = [0, 0, 0];
-  for (const a of ants) c[a.type]++;
-  for (const e of eggs) pending[e.type]++;
-  return { c, pending };
-}
-// The type the colony is most short of, counting brood already on the way.
-function pickType(Tfixed) {
-  const { c, pending } = typeCounts();
-  const have = [c[0] + pending[0], c[1] + pending[1], c[2] + pending[2]];
-  const t = targets(Tfixed || have[0] + have[1] + have[2] + 1);
-  let best = WORKER, bd = -1e9;
-  for (const k of [WORKER, SCOUT, SOLDIER]) { const d = t[k] - have[k]; if (d > bd) { bd = d; best = k; } }
-  return best;
 }
 
 // ───────────────────────── flagged seed patches ─────────────────────────
@@ -805,7 +822,7 @@ function queenTick() {
     const e = eggs[k];
     if (e.timer > 0) e.timer--;
     else if (e.st === E_INCUB && ants.length < MAXANTS) {
-      slotTaken[e.slot] = 0; spawnAnt(fedFor(), e.x, e.y, e.type); born++; eggs.splice(k, 1);
+      slotTaken[e.slot] = 0; spawnAnt(fedFor(), e.x, e.y, e.caste); born++; eggs.splice(k, 1);
     }
   }
   if (queen.dead) return;                     // no more eggs
@@ -814,7 +831,7 @@ function queenTick() {
   if (queen.cd > 0) queen.cd--;
   else if (stored >= EGG_COST + RESERVE && eggs.length < nurseryCells.length && eggs.filter(e => e.st !== E_INCUB).length < MAX_LOOSE) {
     stored -= EGG_COST;
-    eggs.push({ x: queen.x, y: queen.y, st: E_LOOSE, slot: -1, timer: HATCH, type: pickType() });
+    eggs.push({ x: queen.x, y: queen.y, st: E_LOOSE, slot: -1, timer: HATCH, caste: newCaste() });
     queen.cd = layGap(ants.length) | 0;
   }
 }
@@ -878,9 +895,14 @@ function fallSeeds() {
 // In the store: workers open the small and medium seeds bit by bit, and a few large ones sprout.
 // Either way the seed becomes meals and leaves a husk.
 function storeTick() {
+  // With its usual share of majors a colony opens seeds at the measured rate; with none, at half of it.
+  // [research: majors raise the rate for small and medium seeds; the half is a guess]
+  let majors = 0;
+  for (const a of ants) majors += a.caste;
+  const mill = 0.5 + 0.5 * Math.min(1, majors / Math.max(1, ants.length) / MAJOR_SHARE);
   for (let k = SMALL; k <= LARGE; k++) {
     if (!pile[k]) continue;
-    opening[k] += pile[k] * (k === LARGE ? SPROUT_PER_DAY : OPEN_PER_DAY[k]) / DAY;
+    opening[k] += pile[k] * (k === LARGE ? SPROUT_PER_DAY : OPEN_PER_DAY[k] * mill) / DAY * TPS;
     while (opening[k] >= 1 && pile[k] > 0) { opening[k]--; pile[k]--; stored += SEED_MEALS[k]; husks++; }
   }
 }
@@ -899,7 +921,7 @@ function simTick() {
     a.life--; a.age++;
     if (a.sleep > 0) a.sleep--; else stepAnt(a);
     if (a.age > a.maxAge) { a.life = 0; a.cause = 'old'; continue; }
-    if (a.age < FORAGE_AGE) continue;
+    if (a.age < FORAGE_AGE || a.caste === MAJOR) continue;
     // Outside workers are lost at a steady daily rate, to fights, lizards and the heat. The loss is
     // decided here and happens the next time the ant is out on the surface, away from the entrance.
     if (a.doomed) {
@@ -920,7 +942,6 @@ function simTick() {
       if (inside) bfs(spiderMap, [inside.y * W + inside.x]);
     }
   }
-  threat *= THREAT_FADE;
   if (alarm > 0) alarm--;
   let n = 0;
   for (const a of ants) {
@@ -936,27 +957,27 @@ function simTick() {
     pass++;
     for (const a of ants) {                    // only where an ant has moved: any step below ground, a few cells above it
       const far = Math.abs(a.x - a.rx) + Math.abs(a.y - a.ry);
-      if (far >= 6 || (far && grid[a.y * W + a.x] === TUNNEL)) { revealAt(a.x, a.y, a.type === SCOUT ? 26 : a.type === SOLDIER ? 15 : 11, false); a.rx = a.x; a.ry = a.y; }
+      if (far >= 6 || (far && grid[a.y * W + a.x] === TUNNEL)) { revealAt(a.x, a.y, sightOf(a), false); a.rx = a.x; a.ry = a.y; }
     }
     if (tick % 300 === 0) revealAt(queen.x, queen.y, 11, false);
   }
   seedTick();
-  storeTick();
+  if (tick % TPS === 7) storeTick();           // once a second
   if (falling.length) fallSeeds();
 }
 
 // ───────────────────────── saving ─────────────────────────
 // A colony as plain data: `meta` can be written as text, `arrays` are the big maps.
 // Scent trails are left out: they fade in minutes anyway.
-const SAVE_VERSION = 4;
+const SAVE_VERSION = 5;
 function saveState() {
   const P = plan;
   return {
     meta: {
       version: SAVE_VERSION, savedAt: Date.now(), W, H,
       n: { tick, stored, delivered, born, died, diedOutside, diedOld, diedHungry, tunnelCells, moundCells, lying, husks, wasted,
-           spiderTimer, spidersKilled, lostToSpiders, threat, alarm },
-      pile, opening, ENTR: { ...ENTR }, queen: { ...queen }, eggs, marks, spiders, corpses,
+           spiderTimer, spidersKilled, lostToSpiders, alarm },
+      pile, dropped, opening, ENTR: { ...ENTR }, queen: { ...queen }, eggs, marks, spiders, corpses,
       nurseryCells, nurseryRooms, slotTaken,
       // an ant points at the egg it carries and the patch it is heading for; those are saved as positions in their lists
       ants: ants.map(a => ({ ...a, egg: a.egg ? eggs.indexOf(a.egg) : -1, mark: a.mark ? marks.indexOf(a.mark) : -1 })),
@@ -978,8 +999,8 @@ function loadState(s) {
   }
   grid.set(A.grid); food.set(A.food); tint.set(A.tint); band.set(A.band); explored.set(A.explored); surf.set(A.surf); ground.set(A.ground);
   ({ tick, stored, delivered, born, died, diedOutside, diedOld, diedHungry, tunnelCells, moundCells, lying, husks, wasted,
-     spiderTimer, spidersKilled, lostToSpiders, threat, alarm } = d.n);
-  pile = d.pile; opening = d.opening;
+     spiderTimer, spidersKilled, lostToSpiders, alarm } = d.n);
+  pile = d.pile; dropped = d.dropped; opening = d.opening;
   Object.assign(ENTR, d.ENTR); Object.assign(queen, d.queen);
   eggs = d.eggs; marks = d.marks; spiders = d.spiders; corpses = d.corpses;
   nurseryCells = d.nurseryCells; nurseryRooms = d.nurseryRooms; slotTaken = d.slotTaken;

@@ -55,14 +55,9 @@ const GRASS = rgb(126, 148, 74);
 const STOREC = rgb(250, 232, 150);          // opened seed, ready to eat
 const SEEDC = [0, rgb(242, 201, 76), rgb(214, 138, 52), rgb(134, 62, 38)];   // small: straw, medium: amber, large: dark red-brown
 const EGGC = rgb(244, 240, 226), EGGSOON = rgb(255, 226, 140);
-const QUEEN1 = rgb(120, 24, 48), QUEEN2 = rgb(176, 48, 78), QUEENDEAD = rgb(110, 100, 100);
-const ANTHEAD = rgb(18, 12, 8), ANTBODY = rgb(60, 30, 20), SCOUTC = rgb(204, 92, 28);
-const SOLDC = rgb(92, 24, 20), SOLDHEAD = rgb(160, 44, 32);
-const ANTHUNGRY = rgb(160, 160, 150), CALLOWC = rgb(176, 132, 84), CORPSEC = rgb(84, 76, 70);
+const CORPSEC = rgb(84, 76, 70);
 const FLAG = rgb(236, 72, 153), FOGC = rgb(7, 5, 9);
 const SPIDERC = rgb(46, 22, 58), SPIDERHIT = rgb(210, 190, 230), SPIDEREYE = rgb(235, 50, 50);
-const TYPE_SWATCH = ['#cc5c1c', '#3c1e14', '#5c1814'];
-const BODY_LEN = [3, 4, 6];                 // cells: scout, worker, soldier [research: workers are 6.35–9.5 mm]
 
 // ───────────────────────── drawing ─────────────────────────
 let x0 = 0, y0 = 0;                          // the world cell at the view's top-left corner
@@ -105,28 +100,16 @@ function draw() {
     }
   }
   // the store fills from the first cell on: large seeds, then medium, small, and the opened food
+  if (storeApart()) {                         // seeds waiting in the top chamber to be carried down
+    let k = 0;
+    for (const kind of [LARGE, MEDIUM, SMALL]) for (let n = 0; n < dropped[kind] && k < topCells.length; n++) { const c = topCells[k++]; put(c % W, (c / W) | 0, SEEDC[kind]); }
+  }
   let cell = 0;
   for (const [count, colour] of [[pile[LARGE], SEEDC[LARGE]], [pile[MEDIUM], SEEDC[MEDIUM]], [pile[SMALL], SEEDC[SMALL]], [stored, STOREC]])
     for (let k = 0; k < count && cell < storeCells.length; k++) { const c = storeCells[cell++]; put(c % W, (c / W) | 0, colour); }
   for (const e of eggs) if (e.st !== E_CARRIED) put(e.x, e.y, (e.timer < HOUR && (tick >> 3) & 1) ? EGGSOON : EGGC);
   for (const m of marks) for (let k = 5; k <= 9; k++) put(m.x, m.y - k, FLAG);      // a flag over each flagged patch
   for (const d of corpses) put(d.x, d.y, CORPSEC);
-  // An ant is drawn head first with its body trailing; moving straight up or down it stands upright.
-  for (const a of ants) {
-    const bx = a.vert ? 0 : -a.face, by = a.vert ? -a.vface : 0;      // step from head toward tail
-    const plain = a.life < HUNGRY ? ANTHUNGRY : a.age < CALLOW ? CALLOWC : 0;   // grey if hungry, pale if newly adult
-    const head = plain || (a.type === SOLDIER ? SOLDHEAD : a.type === SCOUT ? SCOUTC : ANTHEAD);
-    const body = plain || (a.type === SOLDIER ? SOLDC : a.type === SCOUT ? SCOUTC : ANTBODY);
-    put(a.x, a.y, head);
-    if (a.type === SOLDIER) put(a.x + bx, a.y + by, head);           // a large head
-    for (let k = a.type === SOLDIER ? 2 : 1; k < BODY_LEN[a.type]; k++) put(a.x + k * bx, a.y + k * by, body);
-    const cx = a.x - bx, cy = a.y - by;                               // what it carries, in its jaws
-    if (a.carry) put(cx, cy, SEEDC[a.carry]);
-    else if (a.egg) put(cx, cy, EGGC);
-    else if (a.load) put(cx, cy, sandPal[a.shade * 4 + 1]);
-  }
-  for (let dy = -1; dy <= 0; dy++) for (let k = 0; k < 7; k++)        // the queen: 7 × 2, about 11 mm
-    put(queen.x - k * queen.face, queen.y + dy, queen.dead ? QUEENDEAD : k < 2 ? QUEEN2 : QUEEN1);
   for (const sp of spiders) {                  // only where an ant can see it
     if (cfg.fog && !vis[sp.y * W + sp.x]) continue;
     const bc = sp.hit ? SPIDERHIT : SPIDERC;
@@ -149,6 +132,83 @@ function draw() {
   vctx.putImageData(img, 0, 0);
   cctx.imageSmoothingEnabled = false;
   cctx.drawImage(vc, 0, 0, vw, vh, Math.round((x0 - camX) * zoom), Math.round((y0 - camY) * zoom), vw * zoom, vh * zoom);
+  drawAnts();
+}
+
+// ───────────────────────── the ants themselves ─────────────────────────
+// Ants are drawn as ants, on top of the pixel world: head, thorax, a narrow waist and a gaster, six
+// legs seen as three from the side, and a pair of elbowed antennae. A minor worker is about four
+// cells long (6.4 mm), a major has a much larger head, and the queen is nearly twice the size.
+// The Florida harvester ant is rusty red. A new adult is pale amber and darkens over its first days.
+const mix = (a, b, t) => a + (b - a) * t;
+function antColour(a) {
+  const t = Math.min(1, a.age / CALLOW), old = Math.min(1, a.age / (2 * FORAGE_AGE));
+  let r = mix(214, mix(168, 132, old), t), g = mix(160, mix(58, 40, old), t), b = mix(96, mix(28, 22, old), t);
+  if (a.life < HUNGRY) { r = mix(r, 150, 0.6); g = mix(g, 150, 0.6); b = mix(b, 145, 0.6); }   // a hungry ant goes grey
+  return [r | 0, g | 0, b | 0];
+}
+const css = ([r, g, b], k = 1) => `rgb(${r * k | 0},${g * k | 0},${b * k | 0})`;
+
+// Draw one ant with its head at world cell (x, y), facing the way it last moved.
+function drawAnt(x, y, dx, dy, face, size, headSize, colour, moving, carried) {
+  const z = zoom, hx = (x + 0.5 - camX) * z, hy = (y + 0.5 - camY) * z;
+  if (z < 3) {                                 // zoomed right out: a short bar is all there is room for
+    cctx.fillStyle = css(colour);
+    cctx.fillRect(hx - (dx > 0 || (!dx && face > 0) ? 3 * z * size : 0), hy - z / 2, 3 * z * size, z);
+    return;
+  }
+  let ux = dx, uy = dy;
+  if (!ux && !uy) ux = face;
+  const n = Math.hypot(ux, uy); ux /= n; uy /= n;
+  // "down" for the legs: the side of the body that points toward the ground
+  let nx = -uy, ny = ux;
+  if (ny < -0.01 || (Math.abs(ny) <= 0.01 && nx * face < 0)) { nx = -nx; ny = -ny; }
+  const u = size * z, at = t => [hx - ux * t * u, hy - uy * t * u];       // a point t cells back from the head
+  const angle = Math.atan2(uy, ux);
+  const blob = (t, rx, ry, k) => {
+    const [cx, cy] = at(t);
+    cctx.fillStyle = css(colour, k);
+    cctx.beginPath(); cctx.ellipse(cx, cy, rx * u, ry * u, angle, 0, 6.2832); cctx.fill();
+  };
+  const back = (headSize - 1) * 0.5;           // a bigger head pushes the rest of the body back
+  // legs first, so the body covers where they join
+  cctx.strokeStyle = css(colour, 0.55); cctx.lineWidth = Math.max(1, z * 0.17 * size); cctx.lineCap = 'round';
+  const step = moving ? ((tick >> 2) & 1 ? 0.28 : -0.28) : 0;
+  cctx.beginPath();
+  for (let k = 0; k < 3; k++) {
+    const [lx, ly] = at(1.05 + back + k * 0.32), reach = (1 - k) * 0.75 + (k % 2 ? -step : step);   // front leg forward, hind leg back
+    const kx = lx + nx * 0.55 * u + ux * reach * 0.5 * u, ky = ly + ny * 0.55 * u + uy * reach * 0.5 * u;   // the knee
+    cctx.moveTo(lx, ly); cctx.lineTo(kx, ky);
+    cctx.lineTo(lx + nx * 1.15 * u + ux * reach * u, ly + ny * 1.15 * u + uy * reach * u);
+  }
+  // antennae: out and up from the front of the head, with an elbow
+  const [ax, ay] = at(-0.25 * headSize);
+  cctx.moveTo(ax, ay);
+  cctx.lineTo(ax + (ux * 0.55 - nx * 0.45) * u, ay + (uy * 0.55 - ny * 0.45) * u);
+  cctx.lineTo(ax + (ux * 1.15 - nx * 0.2) * u, ay + (uy * 1.15 - ny * 0.2) * u);
+  cctx.stroke();
+  blob(2.95 + back, 0.85, 0.6, 0.78);          // gaster, a little darker
+  blob(2.1 + back, 0.24, 0.22, 0.85);          // the waist
+  blob(1.35 + back, 0.72, 0.42, 1);            // thorax
+  blob(0.3, 0.55 * headSize, 0.5 * headSize, 0.92);   // head
+  if (carried) {                               // held in the jaws, just in front of the head
+    const [cx, cy] = at(-0.75 * headSize);
+    cctx.fillStyle = carried;
+    cctx.beginPath(); cctx.ellipse(cx, cy, 0.5 * z, 0.5 * z, 0, 0, 6.2832); cctx.fill();
+  }
+}
+
+const hex = c => `rgb(${c & 255},${(c >> 8) & 255},${(c >> 16) & 255})`;
+function drawAnts() {
+  const xa = camX - 8, xb = camX + vw + 8, ya = camY - 8, yb = camY + vh + 8;
+  for (const a of ants) {
+    if (a.x < xa || a.x > xb || a.y < ya || a.y > yb) continue;
+    const carried = a.carry ? hex(SEEDC[a.carry]) : a.egg ? hex(EGGC) : a.load ? hex(sandPal[a.shade * 4 + 1]) : null;
+    const still = a.state === REST;            // a resting ant stands level on the floor
+    drawAnt(a.x, a.y, still ? a.face : a.dx, still ? 0 : a.dy, a.face, 1, a.caste === MAJOR ? 1.6 : 1, antColour(a), !still && !a.sleep, carried);
+  }
+  if (queen.x >= xa && queen.x <= xb && queen.y >= ya && queen.y <= yb)
+    drawAnt(queen.x, queen.y, queen.dx, queen.dy, queen.face, 1.7, 1.05, queen.dead ? [120, 112, 110] : [150, 40, 30], false, null);
 }
 
 // The minimap: the whole world, one dot for every eight cells, redrawn a few times a second.
@@ -270,17 +330,17 @@ addEventListener('resize', resize);
 
 // ───────────────────────── the panel ─────────────────────────
 function hud() {
-  const { c, pending } = typeCounts();
-  const t = targets(Math.max(1, ants.length + eggs.length));
-  $('roster').innerHTML = [SCOUT, WORKER, SOLDIER].map(k =>
-    `<div class="card"><i style="background:${TYPE_SWATCH[k]}"></i><div>` +
-    `<b>${TYPE_NAME[k]}</b> ${c[k]} <small>/ want ${t[k]}${pending[k] ? ` · ${pending[k]} brood` : ''}</small><br>` +
-    `<small>${TYPE_ROLE[k]}</small></div></div>`).join('') +
+  const jobs = [0, 0, 0, 0, 0];
+  for (const a of ants) jobs[taskOf(a)]++;
+  const swatch = ['rgb(214,160,96)', 'rgb(190,100,56)', 'rgb(168,58,28)', 'rgb(132,40,22)', 'rgb(150,50,26)'];
+  $('roster').innerHTML = [T_CALLOW, T_BROOD, T_TRANSFER, T_FORAGER, T_MAJOR].map(k =>
+    `<div class="card"><i style="background:${swatch[k]}"></i><div>` +
+    `<b>${TASK_NAME[k]}</b> ${jobs[k]}<br><small>${TASK_ROLE[k]}</small></div></div>`).join('') +
     `<div class="card"><i style="background:#ec4899"></i><div><b>Flagged seed patches</b> ${marks.length}<br>` +
     `<small>${lying} seeds lying outside</small></div></div>` +
     (cfg.spiders || spiders.length ? `<div class="card"><i style="background:#2e163a"></i><div><b>Spiders</b> ${spiders.length} <small>about</small><br>` +
     `<small>killed ${spidersKilled} · ants lost ${lostToSpiders}</small></div></div>` : '');
-  const n = { explore: 0, forage: 0, home: 0, rest: 0, dig: 0, nurse: 0, patrol: 0 };
+  const n = { explore: 0, forage: 0, home: 0, rest: 0, dig: 0, nurse: 0, patrol: 0, haul: 0 };
   for (const a of ants) {
     switch (a.state) {
       case EXPLORE: n.explore++; break;
@@ -289,18 +349,18 @@ function hud() {
       case REST: n.rest++; break;
       case PATROL: case DEFEND: n.patrol++; break;
       case FETCH: case CARRYEGG: n.nurse++; break;
+      case HAUL: n.haul++; break;
       default: n.dig++;                        // digging, or carrying a pellet out
     }
   }
-  const dug = plan.order.length - plan.left, grown = ants.reduce((k, a) => k + (a.age >= FORAGE_AGE), 0);
+  const dug = plan.order.length - plan.left;
   $('stats').innerHTML =
     `<span>colony age <b>${ageText(tick)}</b>${behind ? ` · running at ×${Math.round(behind)}, not ×${RATES[cfg.rate]}` : ''}</span>` +
     `<span>${saveProblem ? `<span style="color:#e0645a">not saved: ${saveProblem}</span>` : lastSave ? `saved (${Math.max(1, Math.round(savedBytes / 1024))} KB)` : 'not saved yet'}</span>` +
-    `<span>ants <b>${ants.length}</b>: exploring <b>${n.explore}</b> foraging <b>${n.forage}</b> going home <b>${n.home}</b> resting <b>${n.rest}</b> ` +
-    `digging <b>${n.dig}</b> nursing <b>${n.nurse}</b> on guard <b>${n.patrol}</b></span>` +
-    `<span>working outside <b>${grown}</b> · young <b>${ants.length - grown}</b></span>` +
+    `<span>ants <b>${ants.length}</b>, right now: on patrol <b>${n.explore}</b> foraging <b>${n.forage}</b> on guard <b>${n.patrol}</b> going home <b>${n.home}</b> ` +
+    `digging <b>${n.dig}</b> carrying seeds down <b>${n.haul}</b> carrying brood <b>${n.nurse}</b> resting <b>${n.rest}</b></span>` +
     `<span>nest <b>${plan.left ? Math.floor(100 * dug / plan.order.length) + '% dug' : 'finished'}</b>: ${dug} of ${plan.order.length} cells, planned depth ${Math.round(plan.depthCm)} cm · sand on the disc <b>${moundCells}</b></span>` +
-    `<span>store <b>${inStore()}/${storeCells.length}</b>: ready to eat <b>${stored}</b> · unopened small <b>${pile[SMALL]}</b>, medium <b>${pile[MEDIUM]}</b>, large <b>${pile[LARGE]}</b></span>` +
+    `<span>${storeApart() ? `waiting in the top chamber <b>${waiting()}</b> · ` : ''}store <b>${inStore()}/${storeCells.length}</b>: ready to eat <b>${stored}</b> · unopened small <b>${pile[SMALL]}</b>, medium <b>${pile[MEDIUM]}</b>, large <b>${pile[LARGE]}</b></span>` +
     `<span>seeds brought home <b>${delivered}</b> · husks <b>${husks}</b>${wasted ? ` · large seeds thrown out <b>${wasted}</b>` : ''}</span>` +
     `<span>brood <b>${eggs.length}</b>${eggs.some(e => e.st !== E_INCUB) ? ` (${eggs.filter(e => e.st !== E_INCUB).length} waiting to be carried)` : ''}</span>` +
     `<span>born <b>${born}</b> · died <b>${died}</b>: outside <b>${diedOutside}</b>, hunger <b>${diedHungry}</b>, old age <b>${diedOld}</b></span>` +
@@ -400,7 +460,7 @@ function frame(now) {
 resize();
 genWorld();
 try { localStorage.removeItem('ant-colony-save'); } catch (e) { /* the save of the earlier, smaller world; it cannot be read any more */ }
-const begin = () => { showSettings(); setRate(0); centerCam(); lastWall = Date.now(); requestAnimationFrame(frame); };
+const begin = () => { showSettings(); setRate(0); setZoom(Number(new URLSearchParams(location.search).get('zoom')) || zoom); centerCam(); lastWall = Date.now(); requestAnimationFrame(frame); };
 if (TRIAL) {                                  // a throwaway colony, run ahead; the saved one is not touched
   for (let k = 0; k < TRIAL * HOUR; k++) simTick();
   saveProblem = 'this is a trial colony (the address has ?trial in it)';

@@ -21,7 +21,7 @@ function run() {
   const hour = c.run(`(function () { for (let k = 0; k < ${HOUR}; k++) simTick();
     return [ants.length, stored, eggs.length, plan.left, moundCells, born, died, diedOutside, diedHungry, diedOld, lostToSpiders,
             delivered, lying, pile[1], pile[2], pile[3], husks, wasted, storeCells.length,
-            ants.reduce((k, a) => k + (a.age >= FORAGE_AGE), 0), eggs.filter(e => e.st !== E_INCUB).length, queen.dead]; })`);
+            ants.reduce((k, a) => k + (taskOf(a) === T_FORAGER), 0), eggs.filter(e => e.st !== E_INCUB).length, queen.dead]; })`);
   const start = { ants: c.run('ants.length'), cells: c.run('plan.order.length'), depth: c.run('Math.round(plan.depthCm)'), toDig: c.run('plan.left') };
   const perDay = [];
   let s, dugAt = 0, hungryHours = 0, low = start.ants;
@@ -45,7 +45,7 @@ const S = k => list(r => r.s[k]);
 console.log(`\n== Left alone${SPIDERS ? ', spiders on' : ''} (${TRIALS} colonies, ${DAYS} days each)`);
 console.log(`   the nest: planned ${rows[0].start.depth} cm deep, ${rows[0].start.cells} cells, ${rows[0].start.toDig} of them to dig`);
 console.log(`   finished digging after: ${list(r => r.dugAt ? (r.dugAt / 24).toFixed(1) + ' days' : 'not yet (' + r.s[3] + ' left)')}; sand on the disc: ${S(4)}`);
-console.log(`   ants: started with ${rows[0].start.ants}; at the end ${S(0)}; fewest at any time ${list(r => r.low)}; old enough to work outside ${S(19)}`);
+console.log(`   ants: started with ${rows[0].start.ants}; at the end ${S(0)}; fewest at any time ${list(r => r.low)}; foragers ${S(19)}`);
 console.log(`   brood ${S(2)} (waiting to be carried: ${S(20)}); born ${S(5)}`);
 console.log(`   died ${S(6)}: outside ${S(7)}, hunger ${S(8)}, old age ${S(9)}, spiders ${S(10)}; queen dead: ${S(21)}`);
 console.log(`   seeds carried home: ${S(11)} (${(rows.reduce((n, r) => n + r.s[11], 0) / rows.length / DAYS).toFixed(1)} a day); lying outside ${S(12)}`);
