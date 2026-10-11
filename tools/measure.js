@@ -1,101 +1,56 @@
-// Runs the Ant Colony simulation without a browser and measures how colonies fare when left alone.
+// Runs colonies without a browser and reports how they fare when left alone.
 //
-//   node tools/measure.js              4 colonies per scenario, 14 simulated days each
-//   node tools/measure.js 8 30         8 colonies per scenario, 30 simulated days each
-//   node tools/measure.js 4 14 --spiders   also measure with spiders switched on
+//   node tools/measure.js              2 colonies, 5 simulated days each (about 3 minutes)
+//   node tools/measure.js 4 14         4 colonies, 14 simulated days each
+//   node tools/measure.js 2 5 --spiders   with spiders switched on
 //
-// It reads the <script> out of index.html, so it always measures the game as it is now.
 // Nobody pours food: each colony lives on the seeds that fall by themselves. Use it before
 // and after a change to see whether the change helps. Random numbers are not seeded, so two
 // runs give slightly different figures; look at the spread, not one number.
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
+const { newColony } = require('./load.js');
 
-const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-const script = html.slice(html.indexOf('<script>') + 8, html.lastIndexOf('</script>'));
-const TRIALS = Number(process.argv[2]) || 4;
-const DAYS = Number(process.argv[3]) || 14;
-
-// A stand-in for anything the page touches that only exists in a browser.
-function fake() {
-  const f = function () { return fake(); };
-  return new Proxy(f, {
-    get(_t, key) {
-      if (key === Symbol.toPrimitive) return () => 0;
-      if (key === 'data') return new Uint8ClampedArray(640 * 180 * 4);
-      if (key === 'width' || key === 'height' || key === 'length') return 0;
-      return fake();
-    },
-    set() { return true; },
-  });
-}
-
-function newColony() {
-  const context = vm.createContext({
-    document: { addEventListener() {}, hidden: false, querySelectorAll: () => [], getElementById: () => fake(), createElement: () => fake(), body: fake(), documentElement: fake() },
-    window: { devicePixelRatio: 1 }, localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-    addEventListener() {}, requestAnimationFrame() {}, confirm: () => true,
-    innerWidth: 1280, innerHeight: 720, devicePixelRatio: 1,
-    performance: { now: () => 0 }, console, Math, Date, JSON, btoa, atob,
-    Uint8Array, Float32Array, Int16Array, Int32Array, Uint32Array, Uint8ClampedArray, Map, Set,
-  });
-  vm.runInContext(script, context);
-  return context;
-}
-exports.newColony = newColony;
-if (require.main !== module) return;       // used as a helper by the other tools
-
+const TRIALS = Number(process.argv[2]) || 2;
+const DAYS = Number(process.argv[3]) || 5;
+const SPIDERS = process.argv.includes('--spiders');
 let ticksRun = 0, msRun = 0;
 
-function run({ spiders }) {
+function run() {
   const c = newColony();
-  vm.runInContext(`cfg.spiders = ${spiders};`, c);
-  const DAY = vm.runInContext('DAY', c);
-  const step = vm.runInContext(`(function (n) { for (let k = 0; k < n; k++) simTick();
-    let lying = 0; for (let i = 0; i < 100 * W; i++) lying += food[i];
-    return [ants.length, stored, eggs.length, queen.dead, tunnelCells, born, died, lostToSpiders, delivered, lying, chambers,
-      diedOutside, diedHungry, diedOld, ants.reduce((k, a) => k + (a.age >= FORAGE_AGE), 0),
-      pile[1], pile[2], pile[3], husks, wasted, storeCells.length]; })`, c);
-  const start = vm.runInContext('ants.length', c);
+  if (SPIDERS) c.run('cfg.spiders = true');
+  const HOUR = c.run('HOUR');
+  const hour = c.run(`(function () { for (let k = 0; k < ${HOUR}; k++) simTick();
+    return [ants.length, stored, eggs.length, plan.left, moundCells, born, died, diedOutside, diedHungry, diedOld, lostToSpiders,
+            delivered, lying, pile[1], pile[2], pile[3], husks, wasted, storeCells.length,
+            ants.reduce((k, a) => k + (a.age >= FORAGE_AGE), 0), eggs.filter(e => e.st !== E_INCUB).length, queen.dead]; })`);
+  const start = { ants: c.run('ants.length'), cells: c.run('plan.order.length'), depth: c.run('Math.round(plan.depthCm)'), toDig: c.run('plan.left') };
   const perDay = [];
-  let s, low = start, emptyDays = 0;
+  let s, dugAt = 0, hungryHours = 0, low = start.ants;
   const t0 = Date.now();
-  for (let day = 1; day <= DAYS; day++) {
-    for (let part = 0; part < 24; part++) {
-      s = step(DAY / 24); ticksRun += DAY / 24;
-      if (s[0] < low) low = s[0];
-      if (s[1] === 0) emptyDays += 1 / 24;
-    }
-    perDay.push(s[0]);
-    if (s[0] === 0 && s[2] === 0) break;       // no ants and no brood: the colony is over
+  for (let h = 1; h <= DAYS * 24; h++) {
+    s = hour(); ticksRun += HOUR;
+    if (!dugAt && s[3] === 0) dugAt = h;
+    if (s[1] === 0) hungryHours++;
+    if (s[0] < low) low = s[0];
+    if (h % 24 === 0) perDay.push(s[0]);
+    if (s[0] === 0 && s[2] === 0) break;
   }
   msRun += Date.now() - t0;
-  return { days: perDay.length, start, end: s[0], low, emptyDays, stored: s[1], brood: s[2], queenDead: s[3], tunnels: s[4],
-           born: s[5], died: s[6], toSpiders: s[7], delivered: s[8], lying: s[9], rooms: s[10],
-           outside: s[11], hungry: s[12], old: s[13], grown: s[14],
-           small: s[15], medium: s[16], large: s[17], husks: s[18], wasted: s[19], room: s[20], perDay };
+  return { start, s, dugAt, hungryHours, low, perDay };
 }
 
-function report(name, options) {
-  const rows = [];
-  for (let k = 0; k < TRIALS; k++) rows.push(run(options));
-  const mean = key => rows.reduce((n, r) => n + r[key], 0) / rows.length;
-  const list = key => rows.map(r => Math.round(r[key])).join(', ');
-  console.log(`\n== ${name} (${TRIALS} colonies, ${DAYS} days each)`);
-  console.log(`   alive at the end: ${rows.filter(r => r.end > 0).length} of ${TRIALS}`);
-  console.log(`   ants: started with ${rows[0].start}; at the end ${list('end')}; fewest at any time ${list('low')}`);
-  console.log(`   brood growing at the end: ${list('brood')}; born ${list('born')}; of the ants at the end, old enough to work outside: ${list('grown')}`);
-  console.log(`   died ${list('died')}: outside ${list('outside')}, hunger ${list('hungry')}, old age ${list('old')}, spiders ${list('toSpiders')}`);
-  console.log(`   seeds carried home: ${list('delivered')} (${(mean('delivered') / DAYS).toFixed(1)} a day); lying outside ${list('lying')}`);
-  console.log(`   store at the end: meals ready ${list('stored')}; unopened small ${list('small')}, medium ${list('medium')}, large ${list('large')}; room for ${list('room')}`);
-  console.log(`   husks ${list('husks')}; large seeds thrown out for lack of room ${list('wasted')}`);
-  console.log(`   days with nothing ready to eat: ${rows.map(r => r.emptyDays.toFixed(1)).join(', ')}`);
-  console.log(`   tunnel cells at the end: ${list('tunnels')}; rooms dug: ${list('rooms')}; queen killed in ${rows.filter(r => r.queenDead).length} of ${TRIALS}`);
-  console.log(`   ants day by day, first colony: ${rows[0].perDay.join(' ')}`);
-}
-
-report('Left alone, spiders off (the default)', { spiders: false });
-if (process.argv.includes('--spiders')) report('Left alone, spiders on', { spiders: true });
-console.log(`\nSpeed of this run: ${Math.round(ticksRun / (msRun / 1000)).toLocaleString('en')} ticks a second, ` +
-  `which is ${Math.round(ticksRun / (msRun / 1000) / 9).toLocaleString('en')} times real time.`);
+const rows = [];
+for (let k = 0; k < TRIALS; k++) rows.push(run());
+const list = f => rows.map(f).join(', ');
+const S = k => list(r => r.s[k]);
+console.log(`\n== Left alone${SPIDERS ? ', spiders on' : ''} (${TRIALS} colonies, ${DAYS} days each)`);
+console.log(`   the nest: planned ${rows[0].start.depth} cm deep, ${rows[0].start.cells} cells, ${rows[0].start.toDig} of them to dig`);
+console.log(`   finished digging after: ${list(r => r.dugAt ? (r.dugAt / 24).toFixed(1) + ' days' : 'not yet (' + r.s[3] + ' left)')}; sand on the disc: ${S(4)}`);
+console.log(`   ants: started with ${rows[0].start.ants}; at the end ${S(0)}; fewest at any time ${list(r => r.low)}; old enough to work outside ${S(19)}`);
+console.log(`   brood ${S(2)} (waiting to be carried: ${S(20)}); born ${S(5)}`);
+console.log(`   died ${S(6)}: outside ${S(7)}, hunger ${S(8)}, old age ${S(9)}, spiders ${S(10)}; queen dead: ${S(21)}`);
+console.log(`   seeds carried home: ${S(11)} (${(rows.reduce((n, r) => n + r.s[11], 0) / rows.length / DAYS).toFixed(1)} a day); lying outside ${S(12)}`);
+console.log(`   store at the end: meals ready ${S(1)}; unopened small ${S(13)}, medium ${S(14)}, large ${S(15)}; room for ${S(18)}`);
+console.log(`   husks ${S(16)}; large seeds thrown out for lack of room ${S(17)}; hours with nothing ready to eat ${list(r => r.hungryHours)}`);
+console.log(`   ants day by day, first colony: ${rows[0].perDay.join(' ')}`);
+console.log(`\nSpeed: ${Math.round(ticksRun / (msRun / 1000)).toLocaleString('en')} ticks a second, ` +
+  `${Math.round(ticksRun / (msRun / 1000) / 19).toLocaleString('en')} times real time.`);
