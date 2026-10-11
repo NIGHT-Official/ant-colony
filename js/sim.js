@@ -13,7 +13,12 @@
 const CELL_MM = 1.6;     // one cell is 1.6 mm: one pellet of sand [research: a pellet is about 162 grains; the 1.6 mm is derived]
 const CELL_CM = CELL_MM / 10;
 const TPS     = 19;      // ticks per second. An ant walks one cell per tick: about 3 cm/s [borrowed: 2–7 cm/s]
-const SEC = TPS, MIN = 60 * SEC, HOUR = 60 * MIN, DAY = 24 * HOUR;   // real durations, in ticks
+const SEC = TPS, MIN = 60 * SEC, HOUR = 60 * MIN;                    // real seconds, minutes and hours, in ticks
+// Ants move in real time: a second is a second, and a foraging trip takes its true minutes. Their
+// calendar runs CALENDAR times faster than ours, so a year of colony life passes in each of our
+// seasons. Everything counted in days (growing up, ageing, eating, the seasons) uses DAY below.
+const CALENDAR = 4;
+const DAY = 24 * HOUR / CALENDAR;                                    // one day of the colony's calendar: six of our hours
 const RATES = [1, 60, 600];                                          // real time, and two fast-forwards
 const RATE_NAME = ['real time', 'fast: 1 s = 1 min', 'very fast: 1 s = 10 min'];
 
@@ -22,7 +27,7 @@ const W = 2000;          // 3.2 m of ground, a slice of the colony's territory
 const H = 900;           // 19 cm of sky and 1.25 m of sand below it
 const GROUND = 120;      // the row the surface sits at, give or take a few cells
 const N = W * H;
-const AIR = 0, SAND = 1, TUNNEL = 2;
+const AIR = 0, SAND = 1, TUNNEL = 2, PLUG = 3;   // PLUG: sand filling the entrance for the night
 
 const grid     = new Uint8Array(N);    // what each cell is
 const food     = new Uint8Array(N);    // the kind of seed lying in the cell (0 = none)
@@ -98,11 +103,9 @@ const SEED_MEALS = [0, 1, 2, 5];
 // Share of an unopened pile that the workers open each day. [research: 80% of small and 60% of
 // medium seeds were opened within about 6 days in the lab]
 const OPEN_PER_DAY = [0, 0.268, 0.153, 0];
-// Share of the stored large seeds that sprout each day; a sprouted seed is soft and is eaten at once.
-// [guess: sprouting really follows the seasons, peaking in April and December; there are no seasons yet]
-const SPROUT_PER_DAY = 0.01;
+// Large seeds sprout with the seasons, and a sprouted seed is soft and is eaten at once: see weather().
 const SEED_MIX = [0, 0.65, 0.10, 0.25];   // what falls: each patch is one kind [guess]
-const LARGE_SHARE = 0.7;      // large seeds may fill this much of the store [research: about 70% of its weight]
+const LARGE_SHARE = 0.5;      // large seeds may take this much of the store's room [research: about half the seeds by number, 70% by weight]
 // Seeds fall onto the surface by themselves, in small patches. [guess for the amounts]
 const SEED_PATCHES_PER_DAY = 34, SEED_PATCH_MIN = 3, SEED_PATCH_MAX = 8;
 const SEED_MAX = 900;         // no more fall while this many lie on the ground
@@ -118,7 +121,7 @@ const SEED_MAX = 900;         // no more fall while this many lie on the ground
 const SHAFT_HALF = 16;        // the zigzag swings this far each side of the entrance [research: the spiral is 4–6 cm across]
 const CHAMBER_H  = 6;         // a chamber is about 1 cm high [research]
 const AREA_FALL  = 0.68;      // each tenth of the depth holds this share of the tenth above it [research: 25–40% less]
-const PELLET_TIME = 18 * MIN; // work to bite one pellet loose [guess, set so that a nest takes 3–6 days as in the research]
+const PELLET_TIME = 12 * MIN / CALENDAR;   // work to bite one pellet loose [guess, set so that a nest takes 3–6 days as in the research]
 const DIG_OLD = 0.82, DIG_YOUNG = 0.19;   // share of the older (transfer and forager) and of the younger workers that dig [research]
 const MOUND_H = 5;            // the sand disc is at most this many cells deep [research: about 1 cm]
 
@@ -145,6 +148,11 @@ const E_LOOSE = 0, E_CARRIED = 2, E_INCUB = 3;
 const inStore = () => stored + pile[SMALL] + pile[MEDIUM] + pile[LARGE];   // everything taking up room in the store
 const waiting = () => dropped[SMALL] + dropped[MEDIUM] + dropped[LARGE];    // seeds in the top chamber
 const storeApart = () => storeCells !== topCells;                           // is there a store chamber yet?
+// The store's room is in two parts: one for large seeds, which only wait to sprout, and one for
+// everything the colony can eat soon. A full shelf of large seeds must not stop the foraging.
+const largeRoom = () => Math.floor(storeCells.length * LARGE_SHARE) - pile[LARGE] - dropped[LARGE];
+const foodRoom = () => storeCells.length - Math.floor(storeCells.length * LARGE_SHARE)
+                       - stored - pile[SMALL] - pile[MEDIUM] - dropped[SMALL] - dropped[MEDIUM];
 
 // spiders: a leftover from the game this started as, not part of the research; off unless switched on
 const SPIDER_HP = 12, SPIDER_LIFE = 30 * MIN, QUEEN_HP = 60, QUEEN_MORTAL = true;
@@ -156,7 +164,71 @@ const DX  = [1, 1, 0, -1, -1, -1, 0, 1];
 const DY  = [0, 1, 1, 1, 0, -1, -1, -1];
 const LEN = [1, 1.414, 1, 1.414, 1, 1.414, 1, 1.414];
 const wts = new Float32Array(8);
-const solid = (x, y) => !inb(x, y) || grid[y * W + x] === SAND;
+const solid = (x, y) => !inb(x, y) || grid[y * W + x] === SAND || grid[y * W + x] === PLUG;
+
+// ───────────────────────── the calendar and the weather ─────────────────────────
+// A colony begins on the morning of 1 June. The sun, the temperature of the sand and the season
+// follow from the date and decide when the ants can work: see weather().
+// The weather is a simple model of north Florida [guess]; what the ants do about it is from the research.
+const START_DOY = 151, START_HOUR = 8;        // day 151 of the year is 1 June; the colony is met at eight in the morning
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const MONTH_START = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365];
+const HOT = 45, COLD = 25;                    // the sand surface is workable between these, °C [research: 25–45 °C]
+const sky = {                                 // the state of the day, brought up to date once a second
+  doy: 0, hour: 0, year: 1, month: 5, dayOfMonth: 1,
+  sunrise: 6, sunset: 20, sun: 0,             // sun: 0 at night, 1 with the sun at its highest
+  surface: 30, nest: 24,                      // °C at the sand surface, and deep in the nest
+  outside: true,                              // can ants work on the surface right now?
+  why: '',                                    // if not, the reason, in words
+  digging: true, laying: true, dormant: false,
+  seedFall: 1, sprout: 0.01,
+};
+const meanAir = doy => 19.5 + 8.5 * Math.cos(2 * Math.PI * (doy - 200) / 365);   // 11 °C in January, 28 °C in July
+function weather() {
+  const d = START_DOY + START_HOUR / 24 + tick / DAY;
+  const doy = d % 365, hour = (d % 1) * 24;
+  sky.doy = doy; sky.hour = hour; sky.year = 1 + Math.floor(d / 365);
+  let m = 11; while (MONTH_START[m] > doy) m--;
+  sky.month = m; sky.dayOfMonth = 1 + Math.floor(doy - MONTH_START[m]);
+  const light = 12.15 + 1.95 * Math.cos(2 * Math.PI * (doy - 172) / 365);       // hours of daylight: 10.2 in December, 14.1 in June
+  sky.sunrise = 12 - light / 2; sky.sunset = 12 + light / 2;
+  sky.sun = hour > sky.sunrise && hour < sky.sunset ? Math.sin(Math.PI * (hour - sky.sunrise) / light) : 0;
+  const air = meanAir(doy) + 6 * Math.sin(2 * Math.PI * (hour - 9) / 24);       // warmest in mid-afternoon
+  sky.surface = air + sky.sun * (8 + 7 * (light - 10.2) / 3.9);                 // sand in the sun runs far hotter than the air
+  sky.nest = meanAir(doy - 20);                                                  // deep sand follows the season, a few weeks late
+  const winter = m === 11 || m <= 1;
+  // Work outside: by day, ending an hour and a half before sunset, on sand between 25 and 45 °C,
+  // and not at all from December to February. [research]
+  sky.why = sky.sun <= 0 ? 'night: the entrance is closed' : winter ? 'winter: the colony stays in'
+    : hour > sky.sunset - 1.5 ? 'evening: the day\'s work is over' : sky.surface > HOT ? 'the sand is too hot'
+    : sky.surface < COLD ? 'the sand is too cold' : '';
+  sky.outside = !sky.why;
+  sky.digging = sky.sun > 0 && hour <= sky.sunset - 1.5 && !(m >= 10 || m <= 1);   // by day, and not from November to February [research]
+  sky.laying = doy >= 90 && doy < 273;          // the queen lays from April to the end of September [research]
+  sky.dormant = winter;                         // in winter the colony lives on its fat and eats little [research; the amount is a guess]
+  // Seeds fall mostly in summer and autumn [guess, from when the ants collect most].
+  sky.seedFall = m >= 5 && m <= 10 ? 1.4 : winter ? 0.2 : 0.7;
+  // Large seeds sprout when the deep sand is near 17.5 °C, which is April and again in late autumn.
+  // [research for the timing: peaks in April and December; the size of the rate is a guess]
+  sky.sprout = 0.002 + 0.05 * Math.exp(-(((sky.nest - 17.5) / 3) ** 2));
+  closeOrOpen();
+}
+const dateText = () => `${sky.dayOfMonth} ${MONTHS[sky.month]}, ${String(Math.floor(sky.hour)).padStart(2, '0')}:${String(Math.floor(sky.hour % 1 * 60)).padStart(2, '0')}`;
+
+// The entrance is filled with sand for the night and dug open in the morning.
+// [borrowed from the red harvester ant; P. badius is known to close its entrances at sunset]
+let plug = [];                                // the cells filled in, while it is closed
+function closeOrOpen() {
+  if (sky.sun <= 0 && !plug.length) {
+    if (ants.some(a => grid[a.y * W + a.x] === AIR) && sky.hour > sky.sunset && sky.hour < sky.sunset + 0.5) return;   // wait a little for the last ones in
+    plug = mouthCells();
+    for (const c of plug) grid[c] = PLUG;
+    mapsDirty = true;
+  } else if (sky.sun > 0 && plug.length) {
+    for (const c of plug) grid[c] = TUNNEL;
+    plug = []; mapsDirty = true;
+  }
+}
 
 // ───────────────────────── scent trails ─────────────────────────
 // Each cell remembers how strong a trail was and when it was laid; its strength now is worked
@@ -362,7 +434,7 @@ function genWorld() {
   delivered = born = died = diedOutside = diedOld = diedHungry = 0;
   tunnelCells = moundCells = lying = 0;
   spiderTimer = DAY; spidersKilled = lostToSpiders = 0; alarm = 0;
-  nurseryCells = []; slotTaken = []; storeCells = []; topCells = []; nurseryRooms = '';
+  nurseryCells = []; slotTaken = []; storeCells = []; topCells = []; nurseryRooms = ''; plug = [];
 
   // Sandhill ground: gently rolling, flat around the nest, and no stones [research].
   const p1 = Math.random() * 6.28, p2 = Math.random() * 6.28;
@@ -380,6 +452,7 @@ function genWorld() {
   plan = makePlan(START_ANTS);
   for (let k = 0; k < plan.start; k++) setTunnel(plan.order[k]);
   plan.first = plan.start;
+  weather();
   computeMaps();
 
   const home = topCells;
@@ -519,6 +592,9 @@ function stepAnt(a) {
   if (a.life < HUNGRY && stored > 0 && (a.state === FORAGE || a.state === DIGGO || a.state === EXPLORE || a.state === PATROL)) {
     goHome(a);                                // starving: go home and eat
   }
+  // the day's work outside is over (dusk, heat, cold or winter): come in
+  if (!sky.outside && (a.state === FORAGE || a.state === EXPLORE || a.state === PATROL)) goHome(a);
+  if (!sky.digging && a.state === DIGGO) { plan.claims.delete(a.tcell); goHome(a); }
   switch (a.state) {
 
     case REST: {                              // looked at about once a second; the ant sleeps in between
@@ -534,15 +610,15 @@ function stepAnt(a) {
       }
       if (a.timer > 0) break;
       a.sleep = 0;
-      if (plan.left > 0 && a.life > HUNGRY && wantsToDig(a) && Math.random() < 0.7) {
+      if (plan.left > 0 && sky.digging && a.life > HUNGRY && wantsToDig(a) && Math.random() < 0.7) {
         a.state = DIGGO; a.timer = 30 * MIN; a.tcell = -1; a.work = 0;
-      } else if (task === T_FORAGER) {        // only the oldest workers leave the nest [research]
+      } else if (task === T_FORAGER && sky.outside) {   // only the oldest workers leave the nest, and only in working hours [research]
         const r = Math.random();
         if (!marks.length || r < 0.25) {      // a patrol: look for seed patches nobody has flagged [borrowed: patrollers]
           a.state = EXPLORE; a.timer = tripTime(); a.hx = Math.random() < 0.5 ? -1 : 1; a.stepsHome = 0;
         } else if (r < 0.33) {                // a spell on guard at the entrance
           a.state = PATROL; a.timer = ((5 + Math.random() * 4) * MIN) | 0;
-        } else if (inStore() + waiting() < storeCells.length * 0.95) {
+        } else if (foodRoom() > 4) {
           a.state = FORAGE; a.timer = tripTime(); a.stepsHome = 0;
           a.mark = marks[(Math.random() * marks.length) | 0];
         } else a.timer = restTime() | 0;
@@ -579,6 +655,7 @@ function stepAnt(a) {
     case RETURN: {
       if (a.carry) layTrail(FOOD, i, a.stepsFood++);
       if (!inside) {                         // on the surface: make for the entrance
+        if (plug.length && Math.abs(a.x - ENTR.x) < 8) { a.sleep = TPS - 1; break; }   // shut out: wait for morning
         chooseMove(a, HOME, 0, ENTR.x, ENTR.y);
         break;
       }
@@ -589,8 +666,7 @@ function stepAnt(a) {
           if (a.hauled) { a.hauled = false; dropped[kind]++; break; }   // a transfer worker that turned back: put it down again
           delivered++;
           // A large seed with no room left for large seeds is dropped on the rubbish heap.
-          if (kind === LARGE && pile[LARGE] + dropped[LARGE] >= storeCells.length * LARGE_SHARE) wasted++;
-          else if (inStore() + waiting() >= storeCells.length) wasted++;
+          if ((kind === LARGE ? largeRoom() : foodRoom()) <= 0) wasted++;
           else if (storeApart()) dropped[kind]++;          // left here; transfer workers carry it down [research]
           else pile[kind]++;                               // no store chamber yet: this room is the store
         } else if (!descend(a, topMap)) a.carry = 0;
@@ -674,10 +750,11 @@ function stepAnt(a) {
     case DUMP: {                              // carry the pellet up and out onto the sand disc
       if (--a.timer <= 0) { a.load = 0; goHome(a); return; }
       if (inside) {
+        if (plug.length) { a.sleep = TPS - 1; a.timer += TPS; break; }   // closed for the night: wait with it
         if (exitMap.d[i] > 0) { if (!descend(a, exitMap)) { a.load = 0; goHome(a); } break; }
       } else if (Math.abs(a.x - a.dropX) <= 1) {
         dropPellet(a.x, a.shade); a.load = 0;
-        if (plan.left > 0 && a.life > HUNGRY && Math.random() < 0.7) { a.state = DIGGO; a.timer = 30 * MIN; a.tcell = -1; a.work = 0; }
+        if (plan.left > 0 && sky.digging && a.life > HUNGRY && Math.random() < 0.7) { a.state = DIGGO; a.timer = 30 * MIN; a.tcell = -1; a.work = 0; }
         else goHome(a);
         break;
       }
@@ -836,7 +913,7 @@ function queenTick() {
   const qi = queen.y * W + queen.x;
   if (tick % 8 === 0 && nurseMap.d[qi] > 0 && nurseMap.d[qi] < BIG) descend(queen, nurseMap);   // she walks down to the nursery
   if (queen.cd > 0) queen.cd--;
-  else if (stored >= EGG_COST + RESERVE && eggs.length < nurseryCells.length && eggs.filter(e => e.st !== E_INCUB).length < MAX_LOOSE) {
+  else if (sky.laying && stored >= EGG_COST + RESERVE && eggs.length < nurseryCells.length && eggs.filter(e => e.st !== E_INCUB).length < MAX_LOOSE) {
     stored -= EGG_COST;
     eggs.push({ x: queen.x, y: queen.y, st: E_LOOSE, slot: -1, timer: HATCH, caste: newCaste() });
     queen.cd = layGap(ants.length) | 0;
@@ -873,7 +950,7 @@ function placeSeed(x, y, kind) {
 }
 // Now and then a small patch of seeds lands somewhere on the surface, as if dropped by a plant.
 function seedTick() {
-  if (Math.random() >= SEED_PATCHES_PER_DAY / DAY || lying >= SEED_MAX) return;
+  if (Math.random() >= SEED_PATCHES_PER_DAY * sky.seedFall / DAY || lying >= SEED_MAX) return;
   const cx = 12 + ((Math.random() * (W - 24)) | 0);
   const n = SEED_PATCH_MIN + ((Math.random() * (SEED_PATCH_MAX - SEED_PATCH_MIN + 1)) | 0);
   const r = Math.random(), kind = r < SEED_MIX[SMALL] ? SMALL : r < SEED_MIX[SMALL] + SEED_MIX[MEDIUM] ? MEDIUM : LARGE;   // one plant, one kind
@@ -909,7 +986,7 @@ function storeTick() {
   const mill = 0.5 + 0.5 * Math.min(1, majors / Math.max(1, ants.length) / MAJOR_SHARE);
   for (let k = SMALL; k <= LARGE; k++) {
     if (!pile[k]) continue;
-    opening[k] += pile[k] * (k === LARGE ? SPROUT_PER_DAY : OPEN_PER_DAY[k] * mill) / DAY * TPS;
+    opening[k] += pile[k] * (k === LARGE ? sky.sprout : OPEN_PER_DAY[k] * mill) / DAY * TPS;
     while (opening[k] >= 1 && pile[k] > 0) { opening[k]--; pile[k]--; stored += SEED_MEALS[k]; husks++; }
   }
 }
@@ -919,13 +996,14 @@ function simTick() {
   tick++;
   const second = tick % TPS === 0;
   if (second) {
+    weather();
     if (mapsDirty) computeMaps();
     if (plan.left > 0) findDigging();
     if (eggs.some(e => e.st === E_LOOSE)) bfs(eggMap, eggs.filter(e => e.st === E_LOOSE).map(e => e.y * W + e.x));
     marksTick();
   }
   for (const a of ants) {
-    a.life--; a.age++;
+    a.life -= sky.dormant ? 0.2 : 1; a.age++;
     if (a.sleep > 0) a.sleep--; else stepAnt(a);
     if (a.age > a.maxAge) { a.life = 0; a.cause = 'old'; continue; }
     if (a.age < FORAGE_AGE || a.caste === MAJOR) continue;
@@ -976,7 +1054,7 @@ function simTick() {
 // ───────────────────────── saving ─────────────────────────
 // A colony as plain data: `meta` can be written as text, `arrays` are the big maps.
 // Scent trails are left out: they fade in minutes anyway.
-const SAVE_VERSION = 5;
+const SAVE_VERSION = 6;
 function saveState() {
   const P = plan;
   return {
@@ -984,7 +1062,7 @@ function saveState() {
       version: SAVE_VERSION, savedAt: Date.now(), W, H,
       n: { tick, stored, delivered, born, died, diedOutside, diedOld, diedHungry, tunnelCells, moundCells, lying, husks, wasted,
            spiderTimer, spidersKilled, lostToSpiders, alarm },
-      pile, dropped, opening, ENTR: { ...ENTR }, queen: { ...queen }, eggs, marks, spiders, corpses,
+      pile, dropped, opening, plug, ENTR: { ...ENTR }, queen: { ...queen }, eggs, marks, spiders, corpses,
       nurseryCells, nurseryRooms, slotTaken,
       // an ant points at the egg it carries and the patch it is heading for; those are saved as positions in their lists
       ants: ants.map(a => ({ ...a, egg: a.egg ? eggs.indexOf(a.egg) : -1, mark: a.mark ? marks.indexOf(a.mark) : -1 })),
@@ -1007,7 +1085,7 @@ function loadState(s) {
   grid.set(A.grid); food.set(A.food); tint.set(A.tint); band.set(A.band); explored.set(A.explored); surf.set(A.surf); ground.set(A.ground);
   ({ tick, stored, delivered, born, died, diedOutside, diedOld, diedHungry, tunnelCells, moundCells, lying, husks, wasted,
      spiderTimer, spidersKilled, lostToSpiders, alarm } = d.n);
-  pile = d.pile; dropped = d.dropped; opening = d.opening;
+  pile = d.pile; dropped = d.dropped; opening = d.opening; plug = d.plug;
   Object.assign(ENTR, d.ENTR); Object.assign(queen, d.queen);
   eggs = d.eggs; marks = d.marks; spiders = d.spiders; corpses = d.corpses;
   nurseryCells = d.nurseryCells; nurseryRooms = d.nurseryRooms; slotTaken = d.slotTaken;
@@ -1015,6 +1093,7 @@ function loadState(s) {
   const cellRoom = new Map();
   d.plan.chambers.forEach((ch, k) => { for (const c of ch.cells) cellRoom.set(c, k); });
   plan = { ...d.plan, cellRoom, claims: new Map(), frontier: new Set(), left: d.plan.order.reduce((n, c) => n + (grid[c] === SAND), 0) };
+  weather();
   ants = d.ants.map(o => {
     const a = { ...o, egg: o.egg >= 0 ? eggs[o.egg] : null, mark: o.mark >= 0 ? marks[o.mark] : null, tcell: -1, work: 0, rx: -1, ry: -1 };
     if (a.state === CARRYEGG && !a.egg) a.state = RETURN;        // caught half way through something: start again

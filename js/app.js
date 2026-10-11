@@ -79,18 +79,36 @@ function light() {                            // work out which cells are lit th
     if (inb(x, y)) vis[y * W + x] = 1;       // lit only while you're pouring
 }
 
+// The sky by the hour: blue by day, warm at dawn and dusk, dark at night.
+const skyNow = new Uint32Array(H);
+let skyFor = -1;
+function paintSky() {
+  const day = Math.min(1, sky.sun * 4), glow = sky.sun > 0 ? Math.max(0, 1 - sky.sun * 5) : 0;   // glow: the sun is low
+  const key = Math.round(day * 40) * 100 + Math.round(glow * 40);
+  if (key === skyFor) return;
+  skyFor = key;
+  for (let y = 0; y < H; y++) {
+    const c = skyPal[y], t = Math.min(1, y / GROUND);
+    let r = mix(10, c & 255, day), g = mix(14, (c >> 8) & 255, day), b = mix(34, (c >> 16) & 255, day);
+    r = mix(r, 236, glow * t * 0.75); g = mix(g, 150, glow * t * 0.55); b = mix(b, 96, glow * t * 0.5);
+    skyNow[y] = rgb(r | 0, g | 0, b | 0);
+  }
+}
+
 function draw() {
   x0 = Math.floor(camX); y0 = Math.floor(camY);
+  paintSky();
   if (cfg.fog) light();
   for (let vy = 0; vy < vh; vy++) {
     const y = y0 + vy, row = y * W;
     for (let vx = 0; vx < vw; vx++) {
       const x = x0 + vx, i = row + x, t = grid[i];
       let c;
-      if (t === AIR) c = food[i] ? seedShade(SEEDC[food[i]], i) : skyPal[y];
+      if (t === AIR) c = food[i] ? seedShade(SEEDC[food[i]], i) : skyNow[y];
       // the sand disc carries flecks of charcoal [research; the ants collecting it is not modelled, the flecks are only drawn]
       else if (t === SAND) c = y < surf[x] ? ((i * 2654435761 >>> 0) % 11 === 0 ? CHARCOAL : sandPal[band[i] * 4 + tint[i]])
                              : (y === surf[x]) ? GRASS : sandPal[band[i] * 4 + tint[i]];
+      else if (t === PLUG) c = sandPal[tint[i]];                    // the entrance, filled in for the night
       else c = nurserySet[i] ? nurPal[tint[i]] : tunPal[tint[i]];
       if (cfg.show) {                         // scent trails: blue toward home, green toward seeds
         const h = scent(HOME, i), f = scent(FOOD, i);
@@ -403,7 +421,8 @@ function hud() {
   }
   const dug = plan.order.length - plan.left;
   $('stats').innerHTML =
-    `<span>colony age <b>${ageText(tick)}</b>${behind ? ` · running at ×${Math.round(behind)}, not ×${RATES[cfg.rate]}` : ''}</span>` +
+    `<span><b>${dateText()}</b>, year ${sky.year} · day <b>${1 + Math.floor(tick / DAY)}</b> of the colony${behind ? ` · running at ×${Math.round(behind)}, not ×${RATES[cfg.rate]}` : ''}</span>` +
+    `<span>sand surface <b>${Math.round(sky.surface)} °C</b> · ${sky.outside ? 'working hours' : `<span style="color:#e0b45a">${sky.why}</span>`}${sky.laying ? '' : ' · the queen is not laying'}</span>` +
     `<span>${saveProblem ? `<span style="color:#e0645a">not saved: ${saveProblem}</span>` : lastSave ? `saved (${Math.max(1, Math.round(savedBytes / 1024))} KB)` : 'not saved yet'}</span>` +
     `<span>ants <b>${ants.length}</b>, right now: on patrol <b>${n.explore}</b> foraging <b>${n.forage}</b> on guard <b>${n.patrol}</b> going home <b>${n.home}</b> ` +
     `digging <b>${n.dig}</b> carrying seeds down <b>${n.haul}</b> carrying brood <b>${n.nurse}</b> resting <b>${n.rest}</b></span>` +
