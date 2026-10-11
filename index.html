@@ -50,7 +50,7 @@
     <button id="bFull">fullscreen (G)</button>
     <button id="bHud">hide panel (H)</button>
   </div>
-  <div id="hint">seeds fall by themselves &nbsp;·&nbsp; left-drag above ground: pour extra food &nbsp;·&nbsp; scroll: A / D, arrows, mouse wheel, right-drag, screen edges, or the minimap</div>
+  <div id="hint">seeds: <span style="color:#f2c94c">small</span>, <span style="color:#d68a34">medium</span>, <span style="color:#b0563a">large</span> fall by themselves &nbsp;·&nbsp; left-drag above ground: pour extra food &nbsp;·&nbsp; scroll: A / D, arrows, mouse wheel, right-drag, screen edges, or the minimap</div>
 </div>
 <button id="bShow">show panel (H)</button>
 <div id="away" role="status"></div>
@@ -101,6 +101,26 @@ const layGap = n => DAY / (0.092 * Math.max(1, n) ** 0.7) * (0.6 + Math.random()
 const fedFor = () => (7 + Math.random() * 5) * DAY;      // how well fed a new ant starts out
 const restTime = () => (2 + Math.random() * 8) * MIN;    // a pause between jobs [guess]
 const DIG_TIME   = 10 * MIN;  // work to dig out one cell [guess from research: a worker moves about 0.9 g of sand a day]
+// ── seeds ── (docs/research/seeds-diet-sizes.md)
+// Three kinds, told apart by width, because width decides what the ants can do with a seed:
+//   SMALL  1 mm wide or less (panicgrass, paspalum): opened within days and eaten
+//   MEDIUM 1 to 1.4 mm: opened too, but slowly
+//   LARGE  1.4 mm and up (croton, poorjoe, sumac): cannot be opened; stored until it sprouts
+// The number in the food map is the kind of seed lying in that cell (0 = none).
+const SMALL = 1, MEDIUM = 2, LARGE = 3;
+const SEED_NAME = ['', 'small', 'medium', 'large'];
+// Food in a seed, counted in meals. One meal is one small seed (about 0.6 mg) and feeds an adult for
+// EAT_GAIN. [research for the weights: about 0.6, 1.2 and 3 mg; the meal itself is a guess]
+const SEED_MEALS = [0, 1, 2, 5];
+// Share of an unopened pile that the workers open each day. [research: 80% of small and 60% of
+// medium seeds were opened within about 6 days in the lab]
+const OPEN_PER_DAY = [0, 0.268, 0.153, 0];
+// Share of the stored large seeds that sprout each day; a sprouted seed is soft and is eaten at once.
+// [guess: sprouting really follows the seasons, peaking in April and December; there are no seasons yet]
+const SPROUT_PER_DAY = 0.01;
+// What falls: each patch is one kind. [guess, from the ants bringing home mostly seeds about 1 mm wide]
+const SEED_MIX = [0, 0.65, 0.10, 0.25];
+const LARGE_SHARE = 0.7;      // large seeds may fill this much of the store [research: about 70% of its weight]
 // Seeds fall onto the surface by themselves, in small patches. [guess for the amounts]
 const SEED_PATCHES_PER_DAY = 24, SEED_PATCH_MIN = 3, SEED_PATCH_MAX = 8;
 const SEED_MAX   = 600;       // no more fall while this many lie on the ground
@@ -125,7 +145,11 @@ const vis = new Uint8Array(W * H);        // lit by an ant right now (recomputed
 const explored = new Uint8Array(W * H);   // ever seen
 const cfg = { spiders: false, fog: true, rate: 0, dig: 0.5, show: false, paused: false };
 
-let ants = [], stored = 0, delivered = 0, tunnelCells = 0, tick = 0;
+let ants = [], stored = 0, delivered = 0, tunnelCells = 0, tick = 0;   // stored: meals ready to eat
+let pile = [0, 0, 0, 0];                   // unopened seeds in the store, by kind
+let opening = [0, 0, 0, 0];                // parts of a seed opened so far, by kind
+let husks = 0, wasted = 0;                 // seed coats thrown out; large seeds brought home with no room for them
+const inStore = () => stored + pile[SMALL] + pile[MEDIUM] + pile[LARGE];   // everything taking up room
 let born = 0, died = 0, moundCells = 0, exitDirty = true;
 let diedOutside = 0, diedOld = 0, diedHungry = 0;   // deaths by cause (spiders are counted separately)
 let corpses = [];                           // { x, y, t }: where an ant died, and when
@@ -165,6 +189,7 @@ function setTunnel(x, y) {
 
 function genWorld() {
   grid.fill(AIR); food.fill(0); toHome.fill(0); toFood.fill(0);
+  pile = [0, 0, 0, 0]; opening = [0, 0, 0, 0]; husks = 0; wasted = 0;
   tunnelCells = 0; stored = 20; delivered = 0; tick = 0; ants = []; eggs = []; marks = []; project = null; chambers = 0;
   spiders = []; spiderTimer = DAY; spidersKilled = 0; lostToSpiders = 0; threat = 0; alarm = 0;
   nurserySet.fill(0); explored.fill(0); rimDone.fill(0);
@@ -363,7 +388,7 @@ function stepAnt(a) {
     case FORAGE: {
       layTrail(toHome, i, a.stepsHome++);
       if (food[i]) {                         // found some — pick it up and turn around
-        food[i] = 0; a.carry = true; a.state = RETURN; a.stepsFood = 0;
+        a.carry = food[i]; food[i] = 0; a.state = RETURN; a.stepsFood = 0;   // it carries that kind of seed
         a.pi = -2; a.lost = 0;                 // carry it home along the scout's trail if we're near it
         if (a.mark) {
           const path = a.mark.path; let bj = -1, bd2 = 64;
@@ -409,8 +434,11 @@ function stepAnt(a) {
       const dx = a.x - NEST.x, dy = a.y - NEST.y;
       if (dx * dx + dy * dy <= NEST.r * NEST.r && grid[i] === TUNNEL) {
         if (a.carry) {
+          const kind = a.carry === true ? SMALL : a.carry;
           a.carry = false; delivered++;
-          if (stored < storeCells.length) stored++;
+          // A large seed with no room left for large seeds is dropped on the rubbish heap.
+          if (kind === LARGE && pile[LARGE] >= storeCells.length * LARGE_SHARE) wasted++;
+          else if (inStore() < storeCells.length) pile[kind]++;
         }
         a.stepsHome = 0; a.state = REST; a.timer = restTime() | 0;
         return;
@@ -443,7 +471,7 @@ function stepAnt(a) {
           if (!grown) { a.timer = restTime() | 0; break; }
           a.state = PATROL; a.post = pickPost(); a.timer = 3000 + ((Math.random() * 2000) | 0);
         } else {
-          const wantFood = grown && marks.length > 0 && stored < storeCells.length * 0.9;
+          const wantFood = grown && marks.length > 0 && inStore() < storeCells.length * 0.95;
           const p = cfg.dig * (0.5 + a.dil) * Math.max(0, 1 - tunnelCells / CAP);   // nothing else to do: dig
           if (wantFood && Math.random() < 0.75) {
             a.state = FORAGE; a.timer = ((5 + Math.random() * 10) * MIN) | 0; a.stepsHome = 0;
@@ -958,6 +986,16 @@ function dropPellet(x) {
 }
 
 // ───────────────────────── seeds ─────────────────────────
+// In the store: workers open the small and medium seeds bit by bit, and a few large ones sprout.
+// Either way the seed becomes meals and leaves a husk.
+function storeTick() {
+  for (let k = SMALL; k <= LARGE; k++) {
+    if (!pile[k]) continue;
+    opening[k] += pile[k] * (k === LARGE ? SPROUT_PER_DAY : OPEN_PER_DAY[k]) / DAY;
+    while (opening[k] >= 1 && pile[k] > 0) { opening[k]--; pile[k]--; stored += SEED_MEALS[k]; husks++; }
+  }
+}
+
 // Now and then a small patch of seeds lands somewhere on the surface, as if dropped by a plant.
 function seedTick() {
   if (Math.random() >= SEED_PATCHES_PER_DAY / DAY) return;
@@ -966,9 +1004,10 @@ function seedTick() {
   if (lying >= SEED_MAX) return;
   const cx = 4 + ((Math.random() * (W - 8)) | 0);
   const n = SEED_PATCH_MIN + ((Math.random() * (SEED_PATCH_MAX - SEED_PATCH_MIN + 1)) | 0);
+  const r = Math.random(), kind = r < SEED_MIX[SMALL] ? SMALL : r < SEED_MIX[SMALL] + SEED_MIX[MEDIUM] ? MEDIUM : LARGE;   // one plant, one kind
   for (let k = 0; k < n; k++) {
     const x = cx + ((Math.random() * 9 - 4) | 0), y = topY(x) - 1 - ((Math.random() * 3) | 0);
-    if (inb(x, y) && grid[y * W + x] === AIR && !food[y * W + x]) food[y * W + x] = 1;
+    if (inb(x, y) && grid[y * W + x] === AIR && !food[y * W + x]) food[y * W + x] = kind;
   }
   foodFalling = true;
 }
@@ -984,12 +1023,12 @@ function fallFood() {
       const x = flip ? k : W - 1 - k, i = y * W + x;
       if (!food[i]) continue;
       const b = i + W;
-      if (grid[b] === AIR && !food[b]) { food[b] = 1; food[i] = 0; moved = true; continue; }
+      if (grid[b] === AIR && !food[b]) { food[b] = food[i]; food[i] = 0; moved = true; continue; }
       const dir = Math.random() < 0.5 ? -1 : 1;
       for (const s of [dir, -dir]) {
         const xx = x + s;
         if (xx >= 0 && xx < W && grid[b + s] === AIR && !food[b + s] && grid[i + s] === AIR && !food[i + s]) {
-          food[b + s] = 1; food[i] = 0; moved = true; break;
+          food[b + s] = food[i]; food[i] = 0; moved = true; break;
         }
       }
     }
@@ -1047,6 +1086,7 @@ function simTick() {
     if (tick % 300 === 0) revealQueen(false);
   }
   seedTick();
+  storeTick();
   fallFood();
   if (tick % EVAP_EVERY === 0) for (let i = 0; i < W * H; i++) {
     let v = toHome[i]; if (v > 0) { v *= EVAP; toHome[i] = v < 0.004 ? 0 : v; }
@@ -1058,7 +1098,7 @@ function simTick() {
 // The colony is kept in the browser's own storage on this computer, so it is still there
 // next time. When the page has been closed or hidden, the colony lives through the time it
 // missed, up to CATCHUP_MAX, by running the same simulation quickly.
-const SAVE_KEY = 'ant-colony-save', SAVE_VERSION = 2;   // version 1 had no ages; it still loads
+const SAVE_KEY = 'ant-colony-save', SAVE_VERSION = 3;   // older saves still load: 1 had no ages, 2 had one kind of seed
 const SAVE_EVERY = 60 * 1000;                 // ms between automatic saves
 const CATCHUP_MAX = 3 * 24 * 3600 * 1000;     // ms of absence the colony lives through; anything longer is skipped
 let lastSave = 0, saveProblem = '';
@@ -1084,7 +1124,7 @@ function saveState() {
     grid: pack(grid), food: pack(food), tint: pack(tint), surf: pack(surf), explored: pack(explored),
     n: { stored, delivered, tunnelCells, tick, born, died, moundCells, chambers,
          spiderTimer, spidersKilled, lostToSpiders, threat, alarm, diedOutside, diedOld, diedHungry },
-    corpses,
+    corpses, pile, opening, husks, wasted,
     NEST: { ...NEST }, QHOME: { ...QHOME }, ENTR: ENTR.map(e => ({ ...e })), queen: { ...queen },
     storeCells, nurseryCells, slotTaken: Array.from(slotTaken),
     eggs, marks, spiders,
@@ -1098,12 +1138,13 @@ function saveState() {
 
 // Put a saved colony back. Throws if the data is not a save this version can read.
 function loadState(d) {
-  if (!d || (d.version !== 1 && d.version !== SAVE_VERSION) || d.W !== W || d.H !== H) throw new Error('not a save this version can read');
+  if (!d || ![1, 2, SAVE_VERSION].includes(d.version) || d.W !== W || d.H !== H) throw new Error('not a save this version can read');
   unpack(d.grid, grid); unpack(d.food, food); unpack(d.tint, tint); unpack(d.surf, surf); unpack(d.explored, explored);
   ({ stored, delivered, tunnelCells, tick, born, died, moundCells, chambers,
      spiderTimer, spidersKilled, lostToSpiders, threat, alarm, diedOutside, diedOld, diedHungry } =
      { diedOutside: 0, diedOld: 0, diedHungry: 0, ...d.n });
   corpses = d.corpses || [];
+  pile = d.pile || [0, 0, 0, 0]; opening = d.opening || [0, 0, 0, 0]; husks = d.husks || 0; wasted = d.wasted || 0;
   Object.assign(NEST, d.NEST); Object.assign(QHOME, d.QHOME); Object.assign(queen, d.queen);
   ENTR.forEach((e, k) => Object.assign(e, d.ENTR[k]));
   storeCells = d.storeCells; nurseryCells = d.nurseryCells; slotTaken = Uint8Array.from(d.slotTaken);
@@ -1213,7 +1254,7 @@ const ROCKC = [rgb(110, 110, 114), rgb(98, 98, 102), rgb(120, 120, 124), rgb(104
 const GRASS = rgb(96, 148, 62);
 const MOUNDC = [rgb(166, 128, 82), rgb(158, 121, 77), rgb(172, 134, 86), rgb(150, 114, 72)];
 const PELLET = rgb(166, 128, 82);
-const STOREC = rgb(222, 178, 64);
+const STOREC = rgb(250, 232, 150);          // opened seed, ready to eat
 const EGGC = rgb(244, 240, 226), EGGSOON = rgb(255, 226, 140);
 const QUEEN1 = rgb(120, 24, 48), QUEEN2 = rgb(176, 48, 78);
 const nurPal = [0, 1, 2, 3].map(n => rgb(120 + n * 2, 88 + n * 2, 66 + n * 2));
@@ -1224,6 +1265,7 @@ const SCOUTC = rgb(204, 92, 28);
 const SOLDC = rgb(92, 24, 20), SOLDHEAD = rgb(160, 44, 32);
 const FLAG = rgb(236, 72, 153);
 const FOODC = rgb(242, 201, 76);
+const SEEDC = [0, FOODC, rgb(214, 138, 52), rgb(134, 62, 38)];   // small: straw, medium: amber, large: dark red-brown
 const ANTC  = rgb(18, 12, 8);
 
 const FOGC = rgb(7, 5, 9);
@@ -1254,7 +1296,7 @@ function draw() {
       else if (t === DIRT) px[i] = (y < surf[x]) ? MOUNDC[tint[i]] : (y === surf[x]) ? GRASS : dirtPal[(y >> 3) * 4 + tint[i]];
       else if (t === TUNNEL) px[i] = nurserySet[i] ? nurPal[tint[i]] : tunPal[tint[i]];
       else px[i] = ROCKC[tint[i]];
-      if (food[i]) px[i] = FOODC;
+      if (food[i]) px[i] = SEEDC[food[i]];
     }
   }
   if (cfg.show) {
@@ -1269,8 +1311,10 @@ function draw() {
       }
     }
   }
-  const shown = Math.min(stored, storeCells.length);
-  for (let k = 0; k < shown; k++) px[storeCells[k]] = STOREC;
+  // the store fills from the floor up: large seeds at the bottom, then medium, small, and the opened food on top
+  let cell = 0;
+  for (const [count, colour] of [[pile[LARGE], SEEDC[LARGE]], [pile[MEDIUM], SEEDC[MEDIUM]], [pile[SMALL], SEEDC[SMALL]], [stored, STOREC]])
+    for (let k = 0; k < count && cell < storeCells.length; k++) px[storeCells[cell++]] = colour;
   for (const e of eggs) {
     if (e.st === E_CARRIED) continue;
     px[e.y * W + e.x] = (e.st === E_INCUB && e.timer < HOUR && (tick >> 3) & 1) ? EGGSOON : EGGC;
@@ -1292,7 +1336,7 @@ function draw() {
       put(a.x, a.y, hungry ? PLAIN : ANTC); put(a.x + bx, a.y + by, hungry ? PLAIN : ANTBODY);
     } else put(a.x, a.y, hungry ? PLAIN : SCOUTC);
     const cx = a.vert ? a.x + a.face : a.x, cy = a.vert ? a.y : a.y - 1;   // what it carries
-    if (a.carry) put(cx, cy, FOODC);
+    if (a.carry) put(cx, cy, SEEDC[a.carry === true ? SMALL : a.carry]);
     else if (a.egg && a.egg.st === E_CARRIED) put(cx, cy, EGGC);
     else if (a.load > 0) put(cx, cy, PELLET);
   }
@@ -1358,7 +1402,7 @@ function pour() {
   if (!mouse.down) return;
   for (let k = 0; k < 4; k++) {
     const x = mouse.x + ((Math.random() * 5 - 2) | 0), y = mouse.y + ((Math.random() * 5 - 2) | 0);
-    if (inb(x, y) && grid[y * W + x] === AIR && !food[y * W + x]) { food[y * W + x] = 1; foodFalling = true; }
+    if (inb(x, y) && grid[y * W + x] === AIR && !food[y * W + x]) { food[y * W + x] = SMALL; foodFalling = true; }   // what you pour is small seed
   }
 }
 
@@ -1450,7 +1494,8 @@ function hud() {
     `<span>ants <b>${ants.length}</b></span>` +
     `<span>exploring <b>${n.explore}</b> foraging <b>${n.forage}</b> returning <b>${n.home}</b> resting <b>${n.rest}</b> ` +
     `digging <b>${n.dig}</b> nursing <b>${n.nurse}</b> patrolling <b>${n.patrol}</b></span>` +
-    `<span>food store <b>${stored}/${storeCells.length}</b></span>` +
+    `<span>store <b>${inStore()}/${storeCells.length}</b>: ready to eat <b>${stored}</b> · unopened small <b>${pile[SMALL]}</b>, medium <b>${pile[MEDIUM]}</b>, large <b>${pile[LARGE]}</b></span>` +
+    `<span>husks <b>${husks}</b>${wasted ? ` · large seeds thrown out <b>${wasted}</b>` : ''}</span>` +
     `<span>delivered <b>${delivered}</b></span>` +
     `<span>eggs <b>${eggs.filter(e => e.st < E_INCUB).length}</b> waiting · <b>${eggs.filter(e => e.st === E_INCUB).length}</b> incubating</span>` +
     `<span>working outside <b>${ants.reduce((k, a) => k + (a.age >= FORAGE_AGE), 0)}</b> · young <b>${ants.reduce((k, a) => k + (a.age < FORAGE_AGE), 0)}</b></span>` +

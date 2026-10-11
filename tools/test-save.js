@@ -20,6 +20,7 @@ const PICTURE = `JSON.stringify({
   queen, NEST, QHOME, ENTR, storeCells, nurseryCells, slots: Array.from(slotTaken),
   eggs, spiders, marks: marks.map(m => [m.x, m.y, m.path.length]),
   deaths: [diedOutside, diedOld, diedHungry], corpses,
+  seeds: [pile, opening, husks, wasted],
   ants: ants.map(a => [a.x, a.y, a.type, a.life, a.age, a.maxAge, a.doomed, a.carry, a.load, a.egg ? eggs.indexOf(a.egg) : -1, a.mark ? marks.indexOf(a.mark) : -1]),
   project: project && [project.cells.length, project.left, project.first, project.tip],
   cfg: [cfg.spiders, cfg.fog, cfg.dig, cfg.show, cfg.paused],
@@ -52,7 +53,9 @@ for (const [name, hours, setup] of [
 {
   const old = newColony();
   const d = JSON.parse(run(old, 'JSON.stringify(saveState())'));
-  d.version = 1; delete d.corpses; delete d.queen.age; delete d.queen.maxAge;
+  d.version = 1; delete d.corpses; delete d.pile; delete d.opening; delete d.husks; delete d.wasted;
+  for (const a of d.ants) if (a.carry) a.carry = true;
+  delete d.queen.age; delete d.queen.maxAge;
   for (const k of ['diedOutside', 'diedOld', 'diedHungry']) delete d.n[k];
   for (const a of d.ants) { delete a.age; delete a.maxAge; delete a.doomed; delete a.cause; }
   const fresh = newColony();
@@ -68,7 +71,7 @@ for (const [name, hours, setup] of [
 
 // A save from another version, or rubbish, must be refused, not half loaded.
 const c = newColony();
-for (const bad of ['null', '{}', '{"version":99}', '{"version":2,"W":10,"H":10}']) {
+for (const bad of ['null', '{}', '{"version":99}', '{"version":3,"W":10,"H":10}']) {
   let refused = false;
   try { run(c, `loadState(${bad})`); } catch (e) { refused = true; }
   check(refused, 'accepted a bad save: ' + bad);

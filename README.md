@@ -34,7 +34,13 @@ do, the panel shows the rate it is really reaching.
   outside. Outside workers are lost at 3.35% a day, out on the surface; a worker that escapes that dies of
   old age after a little over a year. The dead lie where they fell for a day. The queen lives 15 to 30 years.
 - **The start** is a young colony met in summer: 30 workers of mixed ages, 20 brood of every age, 20 seeds.
-- **Seeds** fall onto the surface in small patches, about one patch an hour. A forager carries one seed home per trip.
+- **Seeds** fall onto the surface in small patches, about one patch an hour, each patch one kind. A forager
+  carries one seed home per trip and never turns one down for its size. There are three kinds, by width:
+  - **Small** (straw-coloured, 1 mm or less, like panicgrass): workers open about a quarter of the pile a day. One meal each.
+  - **Medium** (amber, 1 to 1.4 mm): opened more slowly. Two meals each.
+  - **Large** (dark red-brown, 1.4 mm and up, like croton): cannot be opened. They sit in the store until they
+    sprout, then are eaten at once. Five meals each. They may fill up to 70% of the store.
+  The store is drawn from the floor up: large, medium, small, then the pale opened food. Every seed used leaves a husk.
 - **Queen** lays eggs when the store can afford them (5 seeds each), faster as the colony grows.
   Workers carry eggs to the nursery, where they take **38 days** to become adults.
 - **Types**, picked by the colony for each egg based on a target mix:
@@ -49,7 +55,7 @@ do, the panel shows the rate it is really reaching.
 
 ## What is real and what is a guess
 
-The research is in `docs/research/pogonomyrmex-badius-facts.md`, with its sources. In `index.html` every
+The research is in `docs/research/` (`pogonomyrmex-badius-facts.md` and `seeds-diet-sizes.md`), with its sources. In `index.html` every
 number is marked `[research]`, `[borrowed]` (measured in a related species) or `[guess]`.
 
 | Value | In the simulation | Status |
@@ -59,6 +65,12 @@ number is marked `[research]`, `[borrowed]` (measured in a related species) or `
 | Egg to adult | 38 days | Research, an estimate |
 | Workers born per day | 0.092 × N^0.7 (about 1 a day in a colony of 30) | Research: 0.6–3% growth a day |
 | Seeds per trip | 1 | Research |
+| Seed kinds and what can be opened | small ≤ 1 mm, medium 1–1.4 mm, large ≥ 1.4 mm never opened | Research |
+| Opening rate | 27% of small and 15% of medium seeds a day | Research: 80% and 60% opened in about 6 days (lab) |
+| Large seeds in the store | up to 70% of it | Research: about 70% of store weight |
+| Food in a seed | 1, 2 and 5 meals | Research for the weights (about 0.6, 1.2, 3 mg); the meal is a guess |
+| Sprouting of large seeds | 1% of the pile a day | **Guess.** Really seasonal, peaking in April and December |
+| Mix of seeds falling | 65% small, 10% medium, 25% large patches | **Guess** |
 | Age at first work outside | 43 days | Research (summer-born workers) |
 | Outside workers lost | 3.35% a day | Research |
 | Worker old age | 365–455 days | Research, an estimate ("somewhat more than a year") |
@@ -67,15 +79,16 @@ number is marked `[research]`, `[borrowed]` (measured in a related species) or `
 | Scent trail | half gone in 12 minutes | Research: fades in 15–30 minutes |
 | Foraging trip | 5–15 minutes before giving up | Borrowed: 1.5–47 minutes, 13 on average |
 | Seeds in the store at the start | 20 | Research: one young colony had 20 |
-| Food per ant | one seed every 2 days | **Guess.** Nobody has measured it |
+| Food per ant | one meal (a small seed) every 2 days | **Guess.** Nobody has measured it |
 | Days an ant survives unfed | 12 at most | **Guess** |
-| Seeds to raise one worker | 5 | **Guess** |
+| Meals to raise one worker | 5 | **Guess** |
 | Seeds falling | about 130 a day across the map | **Guess** |
 | Time to dig one cell | 10 minutes of work | **Guess**, from sand moved per worker per day |
 | Rest between jobs | 2–10 minutes | **Guess** |
 
 **Not modelled yet,** although the research covers it: the full sequence of jobs by age (only "inside, then
-outside" so far), the long-lived autumn-born workers, carrying the dead away, brood starving, winter and the seasons, day and night, major workers,
+outside" so far), the long-lived autumn-born workers, carrying the dead away, brood starving, majors opening seeds faster, sprouted seeds going to the larvae first,
+insect food, the husk heap, winter and the seasons, day and night, major workers,
 nest moves, the real shape of the nest (a spiral shaft with chambers, up to 3 m deep), and the mating flight.
 
 ## Tools

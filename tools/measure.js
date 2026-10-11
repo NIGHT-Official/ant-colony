@@ -55,7 +55,8 @@ function run({ spiders }) {
   const step = vm.runInContext(`(function (n) { for (let k = 0; k < n; k++) simTick();
     let lying = 0; for (let i = 0; i < 100 * W; i++) lying += food[i];
     return [ants.length, stored, eggs.length, queen.dead, tunnelCells, born, died, lostToSpiders, delivered, lying, chambers,
-      diedOutside, diedHungry, diedOld, ants.reduce((k, a) => k + (a.age >= FORAGE_AGE), 0)]; })`, c);
+      diedOutside, diedHungry, diedOld, ants.reduce((k, a) => k + (a.age >= FORAGE_AGE), 0),
+      pile[1], pile[2], pile[3], husks, wasted, storeCells.length]; })`, c);
   const start = vm.runInContext('ants.length', c);
   const perDay = [];
   let s, low = start, emptyDays = 0;
@@ -72,7 +73,8 @@ function run({ spiders }) {
   msRun += Date.now() - t0;
   return { days: perDay.length, start, end: s[0], low, emptyDays, stored: s[1], brood: s[2], queenDead: s[3], tunnels: s[4],
            born: s[5], died: s[6], toSpiders: s[7], delivered: s[8], lying: s[9], rooms: s[10],
-           outside: s[11], hungry: s[12], old: s[13], grown: s[14], perDay };
+           outside: s[11], hungry: s[12], old: s[13], grown: s[14],
+           small: s[15], medium: s[16], large: s[17], husks: s[18], wasted: s[19], room: s[20], perDay };
 }
 
 function report(name, options) {
@@ -85,8 +87,10 @@ function report(name, options) {
   console.log(`   ants: started with ${rows[0].start}; at the end ${list('end')}; fewest at any time ${list('low')}`);
   console.log(`   brood growing at the end: ${list('brood')}; born ${list('born')}; of the ants at the end, old enough to work outside: ${list('grown')}`);
   console.log(`   died ${list('died')}: outside ${list('outside')}, hunger ${list('hungry')}, old age ${list('old')}, spiders ${list('toSpiders')}`);
-  console.log(`   seeds carried home: ${list('delivered')} (${(mean('delivered') / DAYS).toFixed(1)} a day); in store at the end ${list('stored')}; lying outside ${list('lying')}`);
-  console.log(`   days with an empty store: ${rows.map(r => r.emptyDays.toFixed(1)).join(', ')}`);
+  console.log(`   seeds carried home: ${list('delivered')} (${(mean('delivered') / DAYS).toFixed(1)} a day); lying outside ${list('lying')}`);
+  console.log(`   store at the end: meals ready ${list('stored')}; unopened small ${list('small')}, medium ${list('medium')}, large ${list('large')}; room for ${list('room')}`);
+  console.log(`   husks ${list('husks')}; large seeds thrown out for lack of room ${list('wasted')}`);
+  console.log(`   days with nothing ready to eat: ${rows.map(r => r.emptyDays.toFixed(1)).join(', ')}`);
   console.log(`   tunnel cells at the end: ${list('tunnels')}; rooms dug: ${list('rooms')}; queen killed in ${rows.filter(r => r.queenDead).length} of ${TRIALS}`);
   console.log(`   ants day by day, first colony: ${rows[0].perDay.join(' ')}`);
 }
