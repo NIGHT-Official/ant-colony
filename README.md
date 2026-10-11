@@ -43,8 +43,17 @@ saved and leaves your real colony alone.
   research: work outside only by day, ending an hour and a half before sunset, on sand between 25 and 45 °C;
   the entrance filled in for the night; the queen laying from April to September; nobody outside from
   December to February, when the colony eats little; large seeds sprouting in spring and late autumn.
-- **The start** is a young colony two days into moving house: 30 workers of mixed ages, each where its job
-  puts it, 20 brood and the queen at the bottom, 20 meals, and a nest whose shaft and first niches are dug.
+- **The start is one queen.** Newly mated, her wings shed, she digs a narrow shaft about 17 cm deep and a
+  small chamber, alone and a pellet at a time, in two to three days. She seals the entrance and never
+  forages: she lives on her own reserves and raises about seven eggs on them. About five small first workers
+  emerge around day 45, open the nest a day later and start to forage. Nobody has watched this in *P. badius*;
+  most of the numbers are from related harvester ants (`docs/research/colony-founding.md`).
+- **A second start,** "a young colony", skips the founding: 30 workers of mixed ages two days into moving
+  house, with the shaft and first niches of their nest already dug.
+- **A small colony** sends its workers outside much younger than the 43 days of a grown one, and its
+  foragers do the inside work too.
+- **Brood has to be fed.** A larva eats about five meals over its 19 days; the workers eat first, and a larva
+  that goes a week without dies. The queen lays only as many eggs as the food coming in can raise.
 - **The nest** is dug to a plan set by the number of workers: a shaft that zigzags down (a spiral, seen
   from the side) with flat chambers on the outside of each bend, large and close together near the top,
   small and far apart below. For 30 workers that is 31 cm deep with four chambers.
@@ -104,6 +113,12 @@ The research is in `docs/research/`, with its sources. In `js/sim.js` every numb
 | Time to dig the nest | about 4 days | Research: 3–6 days. The 18 minutes of work a pellet is a guess set to match |
 | Who digs | 82% of outside-age workers, 19% of younger ones | Research |
 | Egg to adult | 38 days | Research, an estimate |
+| Founding shaft | 17 cm deep, dug in about 3 days | Borrowed (*P. rugosus*, in lab sand only 19 cm deep) |
+| First brood | 7 eggs, about 5 first workers, out around day 45 | Borrowed for the 5 and the timing; the 7 is a **guess** |
+| Queen's reserves | half a percent a day sealed in, 2.5% an egg | **Guess,** shaped by a borrowed 13% of body mass for a first brood |
+| Larvae starve | after 7 days unfed | Research |
+| Laying follows the food coming in | workers plus brood may eat no more than a day's income | **Guess** |
+| Workers go out younger in a small colony | ages scaled down below 30 workers | **Guess,** from young colonies having more foragers |
 | Workers born per day | 0.092 × N^0.7 | Research: 0.6–3% growth a day |
 | Age at first work outside | 43 days | Research (summer-born workers) |
 | Outside workers lost | 3.35% a day | Research |
@@ -124,7 +139,8 @@ The research is in `docs/research/`, with its sources. In `js/sim.js` every numb
 | Seeds falling | about 190 a day across the map | **Guess** |
 | Rest between jobs | 2–10 minutes | **Guess** |
 
-**Not modelled yet,** although the research covers it: nest moves (so the nest never grows), sand passed up
+**Not modelled yet,** although the research covers it: nest moves (so a founding colony stays at about ten
+ants in its first small nest, and no nest ever grows), the mating flight and the 99% of queens that fail, sand passed up
 in a relay, sand left underground, the
 long-lived autumn workers, midden workers, foraging set off by returning patrollers, insect food, the
 husk heap, carrying the dead away, and the mating flight.
@@ -142,7 +158,8 @@ husk heap, carrying the dead away, and the mating flight.
 Both need Node.js.
 
 - `node tools/measure.js` runs colonies without a browser and reports how they fare when left alone
-  (2 colonies for 5 days of their calendar; `node tools/measure.js 2 60` for 60 days, about five minutes).
+  (2 lone queens for 5 days of their calendar; `node tools/measure.js 4 150` for four queens over 150 days;
+  add `--colony` to start from a young colony moving in).
   A run stops itself after 14 minutes.
 - `node tools/test-save.js` checks that a colony can be saved and put back exactly, and carries on afterwards.
 
@@ -163,5 +180,10 @@ Both need Node.js.
   July): 51 and 49 ants at the end from 30, 45 and 42 born, 24 and 23 lost outside, none starved, 44 and 36
   brood growing. One colony had nothing ready to eat for 221 of the 1,440 hours, so food is tight. About 300
   large seeds per colony were thrown out for lack of room. Autumn, winter and spring have not been run.
+- **2026-10-11, from a lone queen** (4 queens, 150 calendar days, June to the end of October): all four
+  founded a colony that was still alive, with 4, 7, 6 and 8 workers; 5 ants starved in one colony and none in
+  the others. The first version of this start bred every colony up to about 30 ants and starved them
+  together in October; feeding the larvae and tying the queen's laying to the food coming in fixed it.
+  The young-colony start under the same rules: 24 and 29 ants after 60 days, none starved. Winter is untested.
   Three earlier runs that day each caught a fault: a store jammed with large seeds, brood that could not be
   carried between two nursery chambers, and a store made too small.

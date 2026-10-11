@@ -46,7 +46,15 @@ const EAT_GAIN   = 2 * DAY;   // one meal keeps an adult going this long [guess:
 const LIFE_MAX   = 12 * DAY;  // a well-fed ant can go this long without food [guess: adults live off their fat]
 const EAT_BELOW  = 6 * DAY;   // an ant resting in the nest eats once it is below this
 const HUNGRY     = 3 * DAY;   // below this an ant heads home to eat (if there's food)
-const EGG_COST   = 5;         // meals it takes to raise one worker [guess, from seed and worker weights]
+const EGG_COST   = 5;         // meals a larva eats on its way to becoming a worker [guess, from seed and worker weights]
+const EGG_DAYS = 8, LARVA_DAYS = 19;   // of the 38 days: 8 as an egg, 19 as a larva, then 11 as a pupa [research, an estimate]
+const LARDER = 1;             // meals per worker kept back before any goes to brood: about two days of food [guess]
+// The queen lays only as many eggs as the food coming in can raise: she stops when the workers and
+// brood there already are would eat all of a day's income. Without this a colony breeds past what
+// its store can feed and the workers starve together a month later. [guess]
+// Food already put by is not counted: it is what the colony lives on through autumn and winter.
+const INCOME_DAYS = 5;        // the income is averaged over about this many days
+const LARVA_STARVES = 7 * DAY;   // a larva that goes unfed this long dies [research: larvae die within about 7 days]
 const RESERVE    = 3;         // meals the queen leaves in the store for the workers
 const HATCH      = 38 * DAY;  // egg to adult: 8 days as an egg, 19 as a larva, 11 as a pupa [research, an estimate]
 const MAX_LOOSE  = 3;         // eggs waiting to be carried before the queen pauses
@@ -56,6 +64,18 @@ const layGap = n => DAY / (0.092 * Math.max(1, n) ** 0.7) * (0.6 + Math.random()
 const fedFor = () => (7 + Math.random() * 5) * DAY;      // how well fed a new ant starts out
 const restTime = () => (2 + Math.random() * 8) * MIN;    // a pause between jobs [guess]
 const tripTime = () => ((5 + Math.random() * 10) * MIN) | 0;   // how long a trip outside lasts before giving up [borrowed: 1.5–47 min, 13 on average]
+// ── founding ── (docs/research/colony-founding.md)
+// A colony begins with one newly mated queen. She digs a short shaft and a small chamber alone,
+// seals herself in, and raises her first few workers on her own body reserves; she never forages.
+// Nobody has watched this in P. badius, so most of these numbers come from related harvester ants.
+const FOUND_DEPTH_CM = 17;    // depth of the founding shaft [borrowed: 17 cm on average, in three days]
+const QUEEN_PELLET = 60 * SEC;   // her work to bite one pellet loose [guess, set so the digging takes about three days]
+const FIRST_CLUTCH = 7;       // eggs in her first brood [guess: about 5 first workers survive, borrowed]
+const BROOD_LOSS = 0.3;       // share of the first brood that is lost [guess: 20–40%]
+const RESERVE_PER_DAY = 0.5, RESERVE_PER_EGG = 2.5;   // percent of her reserves used [guess, shaped by 13% of body mass for a first brood, borrowed]
+// In a small colony workers go outside much younger: the first workers have to. [guess, from
+// "young colonies have a higher share of foragers"; in a colony of 30 or more the ages are the measured ones]
+let ageScale = 1;
 const START_ANTS = 30;        // a young colony [research: the smallest colonies have fewer than 100 workers]
 const START_BROOD = 20;       // brood of every age already in the nest [research: a summer colony always holds brood]
 const SIGHT = 9;              // cells at which a forager notices a seed (about 1.5 cm) [guess]
@@ -84,7 +104,8 @@ const NURSE_UNTIL = 25 * DAY; // brood care ends and transfer work begins [guess
 const T_CALLOW = 0, T_BROOD = 1, T_TRANSFER = 2, T_FORAGER = 3, T_MAJOR = 4;
 const TASK_NAME = ['Callows', 'Brood care', 'Transfer workers', 'Foragers', 'Majors'];
 const TASK_ROLE = ['new adults, still pale', 'tend and carry the brood', 'seeds down, sand up', 'collect seeds · patrol · guard', 'open seeds in the store'];
-const taskOf = a => a.caste === MAJOR ? T_MAJOR : a.age < CALLOW ? T_CALLOW : a.age < NURSE_UNTIL ? T_BROOD : a.age < FORAGE_AGE ? T_TRANSFER : T_FORAGER;
+const forageAge = () => FORAGE_AGE * ageScale, nurseUntil = () => NURSE_UNTIL * ageScale;
+const taskOf = a => a.caste === MAJOR ? T_MAJOR : a.age < CALLOW * ageScale ? T_CALLOW : a.age < nurseUntil() ? T_BROOD : a.age < forageAge() ? T_TRANSFER : T_FORAGER;
 const newCaste = () => Math.random() < MAJOR_SHARE ? MAJOR : MINOR;
 // Ages for a colony met in summer [research: about 40% foragers, 25% transfer workers, the rest deep inside].
 const startAge = () => { const r = Math.random();
@@ -141,13 +162,18 @@ let pile = [0, 0, 0, 0];                   // unopened seeds in the store, by ki
 let dropped = [0, 0, 0, 0];                // seeds left in the top chamber by foragers, waiting to be carried down
 let sprouted = 0;                          // large seeds in the store that have sprouted and can be fed to the brood
 let opening = [0, 0, 0, 0];                // parts of a seed opened so far, by kind
-let husks = 0, wasted = 0;                 // seed coats thrown out; large seeds brought home with no room for them
+let husks = 0, wasted = 0, broodLost = 0, larvaMeal = 0;   // broodLost: larvae that starved
+let income = 0, earned = 0;                // meals coming in per day, averaged; and meals made since it was last worked out                 // seed coats thrown out; large seeds brought home with no room for them
 let delivered = 0, born = 0, died = 0, diedOutside = 0, diedOld = 0, diedHungry = 0;
 let tunnelCells = 0, moundCells = 0, lying = 0;   // lying: seeds on the ground outside
 let mapsDirty = true;
 const cfg = { spiders: false, fog: true, rate: 0, show: false, paused: false };
 const ENTR = { x: W >> 1, y: 0 };          // the nest entrance
-const queen = { x: 0, y: 0, px: -1, py: -1, dx: 1, dy: 0, face: 1, vert: false, vface: 1, cd: 0, hp: 0, dead: false, age: 0, maxAge: 0 };
+const queen = { x: 0, y: 0, px: -1, py: -1, dx: 1, dy: 0, face: 1, vert: false, vface: 1, cd: 0, hp: 0, dead: false, age: 0, maxAge: 0,
+                // founding: 'dig', 'settle', 'brood', then 'done' once her first workers have opened the nest
+                stage: 'done', reserve: 100, clutch: 0, load: 0, shade: 0, work: 0, tcell: -1, dropX: 0, openAt: 0 };
+let sealed = false;                        // the entrance is closed for the founding, day and night
+let startKind = 'queen';                   // how this colony began: 'queen' or 'colony'
 let plan = null;                           // the nest being dug: see makePlan()
 let nurseryCells = [], slotTaken = [], storeCells = [], topCells = [];
 let heapCells = [], dropCells = [];            // the store's and the top chamber's cells from the floor up, for drawing the seed piles
@@ -230,6 +256,8 @@ const dateText = () => `${sky.dayOfMonth} ${MONTHS[sky.month]}, ${String(Math.fl
 // [borrowed from the red harvester ant; P. badius is known to close its entrances at sunset]
 let plug = [];                                // the cells filled in, while it is closed
 function closeOrOpen() {
+  if (sealed) return;
+  if (queen.stage === 'dig' && grid[queen.y * W + queen.x] !== TUNNEL) return;   // she is still out
   if (sky.sun <= 0 && !plug.length) {
     if (ants.some(a => grid[a.y * W + a.x] === AIR) && sky.hour > sky.sunset && sky.hour < sky.sunset + 0.5) return;   // wait a little for the last ones in
     plug = mouthCells();
@@ -372,6 +400,27 @@ function makePlan(workers) {
   return { workers, depthCm, areaCm2, chambers, order, start, first: 0, left: order.length, cellRoom, claims: new Map(), frontier: new Set() };
 }
 
+// The nest a queen digs alone: one narrow shaft and a small chamber at the bottom of it.
+function makeFoundingPlan() {
+  const ex = ENTR.x, sy = surf[ex], deep = Math.round(FOUND_DEPTH_CM / CELL_CM);
+  const inPlan = new Set(), shaftCells = [], cells = [];
+  const add = (list, x, y) => { const c = y * W + x; if (y >= surf[x] && !inPlan.has(c)) { inPlan.add(c); list.push(c); } };
+  for (let s = 0; s <= deep; s++) {                 // a shaft three cells wide that wanders a little
+    const cx = ex + Math.round(5 * Math.sin(s / deep * Math.PI * 1.5)), cy = sy + 1 + s;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) add(shaftCells, cx + dx, cy + dy);
+  }
+  const bx = ex + Math.round(5 * Math.sin(Math.PI * 1.5)), floor = sy + deep + 3;
+  for (let s = 0; s <= 15; s++) for (let h = 0; h < 5; h++) {   // about two queen-lengths wide [guess]
+    if (h === 4 && (s < 1 || s > 13)) continue;
+    add(cells, bx - 1 - s, floor - h);
+  }
+  const order = shaftCells.concat(cells), cellRoom = new Map();
+  for (const c of cells) cellRoom.set(c, 0);
+  return { workers: 1, depthCm: FOUND_DEPTH_CM, areaCm2: 0, founding: true,
+           chambers: [{ z: FOUND_DEPTH_CM, role: 'top', cells, dug: [], niche: cells.length }],
+           order, start: 0, first: 0, left: order.length, cellRoom, claims: new Map(), frontier: new Set() };
+}
+
 function setTunnel(c) {
   if (grid[c] === TUNNEL) return;
   grid[c] = TUNNEL; tunnelCells++; mapsDirty = true;
@@ -383,11 +432,12 @@ function setTunnel(c) {
 // Decide what each part of the nest is used for, from what has been dug so far. Nobody plans
 // this: the young live deep and the old near the top, and the rooms follow [research].
 function assignRooms() {
-  const rooms = plan.chambers, ready = ch => ch.dug.length >= 12;
+  const rooms = plan.chambers, ready = ch => ch.dug.length >= (plan.founding ? 1 : 12);
   topCells = rooms[0].dug;
   let nurs = rooms.filter(ch => ch.role === 'nursery' && ready(ch));
   if (!nurs.length) {                                   // not dug yet: the deepest room there is
     for (let k = rooms.length - 1; k >= 0; k--) if (ready(rooms[k])) { nurs = [rooms[k]]; break; }
+    if (!nurs.length) nurs = [rooms[0]];
   }
   const stores = rooms.filter(ch => ch.role === 'store' && ready(ch));
   storeCells = stores.length ? [].concat(...stores.map(ch => ch.dug)) : rooms[0].dug;
@@ -442,12 +492,12 @@ function findDigging() {
 }
 
 // ───────────────────────── a new colony ─────────────────────────
-function genWorld() {
+function genWorld(kind = 'queen') {
   grid.fill(AIR); food.fill(0); explored.fill(0); nurserySet.fill(0); rimDone.fill(0);
   scentS[HOME].fill(0); scentS[FOOD].fill(0);
   for (const m of [exitMap, topMap, midMap, nurseMap, digMap, eggMap, spiderMap]) { m.d.fill(BIG); m.n = 0; }
   tick = 0; ants = []; eggs = []; marks = []; spiders = []; corpses = []; falling = [];
-  stored = 20; pile = [0, 0, 0, 0]; dropped = [0, 0, 0, 0]; sprouted = 0; opening = [0, 0, 0, 0]; husks = 0; wasted = 0;   // [research: one young colony held 20 seeds]
+  stored = 20; pile = [0, 0, 0, 0]; dropped = [0, 0, 0, 0]; sprouted = 0; opening = [0, 0, 0, 0]; husks = 0; wasted = 0; broodLost = 0; larvaMeal = 0; income = 0; earned = 0;   // [research: one young colony held 20 seeds]
   delivered = born = died = diedOutside = diedOld = diedHungry = 0;
   tunnelCells = moundCells = lying = 0;
   spiderTimer = DAY; spidersKilled = lostToSpiders = 0; alarm = 0;
@@ -466,23 +516,35 @@ function genWorld() {
   for (let i = 0; i < N; i++) tint[i] = (Math.random() * 4) | 0;
   ENTR.y = surf[ENTR.x];
 
-  plan = makePlan(START_ANTS);
-  for (let k = 0; k < plan.start; k++) setTunnel(plan.order[k]);
-  plan.first = plan.start;
-  weather();
-  computeMaps();
-
-  const home = nurseryCells;                           // the queen is at the bottom of the nest [research]
-  const floor = Math.max(...home.map(c => (c / W) | 0));
-  const onFloor = home.filter(c => ((c / W) | 0) === floor);
-  const q = onFloor[onFloor.length >> 1];
-  Object.assign(queen, { x: q % W, y: (q / W) | 0, px: -1, py: -1, cd: HOUR, hp: QUEEN_HP, dead: false,
-                         age: 365 * DAY, maxAge: queenLife() });   // she is a year old when we meet her
-  for (let n = 0; n < START_ANTS; n++) spawnAnt(fedFor(), undefined, undefined, n < 2 ? MAJOR : MINOR, startAge());   // two majors in thirty
-  for (let k = 0; k < START_BROOD && k < nurseryCells.length; k++) {      // brood at every stage of growing up
-    const c = nurseryCells[k];
-    slotTaken[k] = 1;
-    eggs.push({ x: c % W, y: (c / W) | 0, st: E_INCUB, slot: k, timer: (Math.random() * HATCH) | 0, caste: newCaste() });
+  startKind = kind; sealed = false; ageScale = 1;
+  Object.assign(queen, { px: -1, py: -1, dx: 1, dy: 0, face: 1, cd: HOUR, hp: QUEEN_HP, dead: false, maxAge: queenLife(),
+                         stage: 'done', reserve: 100, clutch: 0, load: 0, shade: 0, work: 0, tcell: -1, dropX: 0, openAt: 0 });
+  if (kind === 'queen') {
+    // One queen, her wings just shed, on bare sand a little way from where she will dig.
+    stored = 0;
+    plan = makeFoundingPlan();
+    weather();
+    computeMaps();
+    Object.assign(queen, { x: ENTR.x - 40, y: surf[ENTR.x - 40] - 1, age: 0, stage: 'dig' });
+  } else {
+    // A young colony two days into moving house.
+    plan = makePlan(START_ANTS);
+    for (let k = 0; k < plan.start; k++) setTunnel(plan.order[k]);
+    plan.first = plan.start;
+    weather();
+    computeMaps();
+    const home = nurseryCells;                         // the queen is at the bottom of the nest [research]
+    const floor = Math.max(...home.map(c => (c / W) | 0));
+    const onFloor = home.filter(c => ((c / W) | 0) === floor);
+    const q = onFloor[onFloor.length >> 1];
+    Object.assign(queen, { x: q % W, y: (q / W) | 0, age: 365 * DAY });   // she is a year old when we meet her
+    income = 25;                                       // as if it had been foraging all along
+    for (let n = 0; n < START_ANTS; n++) spawnAnt(fedFor(), undefined, undefined, n < 2 ? MAJOR : MINOR, startAge());   // two majors in thirty
+    for (let k = 0; k < START_BROOD && k < nurseryCells.length; k++) {    // brood at every stage of growing up
+      const c = nurseryCells[k];
+      slotTaken[k] = 1;
+      eggs.push({ x: c % W, y: (c / W) | 0, st: E_INCUB, slot: k, timer: (Math.random() * HATCH) | 0, caste: newCaste() });
+    }
   }
   for (let x = ENTR.x - 60; x <= ENTR.x + 60; x++)       // you start with a view of the ground around the entrance
     for (let y = 0; y <= surf[x] + 2; y++) explored[y * W + x] = 1;
@@ -511,7 +573,7 @@ function spawnAnt(life = fedFor(), x, y, caste = MINOR, age = 0) {
     doomed: false, cause: '',              // doomed: will not come back from its next time outside
   });
 }
-const wantsToDig = a => a.caste === MINOR && a.dig < (a.age >= NURSE_UNTIL ? DIG_OLD : DIG_YOUNG);
+const wantsToDig = a => a.caste === MINOR && a.dig < (a.age >= nurseUntil() ? DIG_OLD : DIG_YOUNG);
 
 // Can an ant stand here?  Tunnels always; open air only if it's touching the ground, a tunnel
 // or a seed (so ants crawl along the surface but don't walk through the sky).
@@ -592,8 +654,8 @@ function descend(a, map) {
 
 // Where an ant rests: callows and brood-care workers deep in the nursery, transfer workers and
 // majors among the stores, and foragers in the top chamber [research: workers move up as they age].
-const homeMap = a => a.caste === MAJOR ? midMap : a.age < NURSE_UNTIL ? nurseMap : a.age < FORAGE_AGE ? midMap : topMap;
-const defender = a => a.caste === MINOR && a.age >= FORAGE_AGE;      // the older workers at the surface
+const homeMap = a => a.caste === MAJOR ? midMap : a.age < nurseUntil() ? nurseMap : a.age < forageAge() ? midMap : topMap;
+const defender = a => a.caste === MINOR && a.age >= forageAge();      // the older workers at the surface
 
 function goHome(a) { a.state = RETURN; a.tcell = -1; a.work = 0; a.timer = 30 * MIN; }
 
@@ -630,9 +692,9 @@ function stepAnt(a) {
       a.sleep = 0;
       // work in the store: majors open seeds whenever any are due; younger minors help now and then,
       // and take sprouted seeds down to the brood [research]
-      if (a.life > HUNGRY && task !== T_FORAGER) {
+      if (a.life > HUNGRY && (task !== T_FORAGER || ants.length < 15)) {   // in a small colony the foragers do the inside work too [guess]
         if ((due(SMALL) || due(MEDIUM)) && Math.random() < (task === T_MAJOR ? 0.9 : 0.15)) { a.state = MILL; a.timer = 30 * MIN; a.mill = 0; break; }
-        if (sprouted > 0 && task !== T_MAJOR && Math.random() < 0.5) { a.state = FEED; a.timer = 30 * MIN; break; }
+        if (sprouted > 0 && task !== T_MAJOR && Math.random() < 0.5 && !plan.founding) { a.state = FEED; a.timer = 30 * MIN; break; }
       }
       if (plan.left > 0 && sky.digging && a.life > HUNGRY && wantsToDig(a) && Math.random() < 0.7) {
         a.state = DIGGO; a.timer = 30 * MIN; a.tcell = -1; a.work = 0;
@@ -784,7 +846,7 @@ function stepAnt(a) {
       const need = a.caste === MAJOR ? MILL_MAJOR : MILL_MINOR, nap = Math.min(TPS, need - a.work);
       a.work += nap; a.sleep = nap - 1; a.timer -= nap;
       if (a.work >= need) {                   // open: the kernel is food, the husk is rubbish
-        stored += SEED_MEALS[a.mill]; husks++; a.mill = 0; a.work = 0;
+        stored += SEED_MEALS[a.mill]; earned += SEED_MEALS[a.mill]; husks++; a.mill = 0; a.work = 0;
         if (!(due(SMALL) || due(MEDIUM)) || Math.random() < 0.25) goHome(a);
       }
       break;
@@ -797,7 +859,7 @@ function stepAnt(a) {
         if (midMap.d[i] === 0) { sprouted--; a.carry = SPROUTED; }
         else if (!descend(a, midMap)) goHome(a);
       } else if (nurseMap.d[i] === 0) {       // fed to the larvae [research: sprouted seeds go to the brood]
-        a.carry = 0; stored += SEED_MEALS[LARGE]; husks++;
+        a.carry = 0; stored += SEED_MEALS[LARGE]; earned += SEED_MEALS[LARGE]; husks++;
         if (sprouted <= 0 || Math.random() < 0.3) goHome(a);
       } else if (!descend(a, nurseMap)) { a.carry = 0; sprouted++; goHome(a); }
       break;
@@ -966,6 +1028,105 @@ function marksTick() {
 }
 
 // ───────────────────────── queen and brood ─────────────────────────
+// The queen founding her nest alone: dig, settle, seal herself in, raise the first brood.
+function freeSlotNear(x, y) {
+  let slot = -1, best = 1e9;
+  for (let k = 0; k < nurseryCells.length; k++) {
+    if (slotTaken[k]) continue;
+    const c = nurseryCells[k], d = Math.abs(c % W - x) + Math.abs(((c / W) | 0) - y) * 3;
+    if (d < best) { best = d; slot = k; }
+  }
+  return slot;
+}
+function foundingTick() {
+  const q = queen, qi = q.y * W + q.x, inside = grid[qi] === TUNNEL;
+  if (q.stage === 'dig') {
+    if (q.x !== q.rx || q.y !== q.ry) { pass++; revealAt(q.x, q.y, 16, false); q.rx = q.x; q.ry = q.y; }
+    if (q.load) {                              // carry the pellet out and drop it by the entrance
+      if (inside && exitMap.d[qi] > 0) { if (!descend(q, exitMap)) q.load = 0; }
+      else if (!inside && Math.abs(q.x - q.dropX) <= 1) { dropPellet(q.x, q.shade); q.load = 0; }
+      else chooseMove(q, 0, 0, q.dropX, ground[q.dropX] - 1);
+      return;
+    }
+    if (plan.left <= 0) { q.stage = 'settle'; return; }
+    if (!sky.digging) {                        // night: she waits inside if there is an inside yet
+      if (!inside && tunnelCells > 0 && tick % 3 === 0) chooseMove(q, 0, 0, ENTR.x, ENTR.y);
+      return;
+    }
+    if (q.tcell >= 0) {                        // biting a pellet loose
+      if (grid[q.tcell] !== SAND) { q.tcell = -1; return; }
+      if (++q.work < QUEEN_PELLET) return;
+      q.shade = band[q.tcell]; setTunnel(q.tcell); plan.frontier.delete(q.tcell);
+      q.tcell = -1; q.work = 0; q.load = 1;
+      q.dropX = ENTR.x + (Math.random() < 0.5 ? -1 : 1) * Math.round(7 + Math.random() * 26);
+      return;
+    }
+    if (tunnelCells === 0) {                   // the very first bite, from the surface
+      const c = plan.order[plan.first], cx = c % W, cy = (c / W) | 0;
+      if (Math.abs(q.x - cx) <= 1 && Math.abs(q.y - cy) <= 1) { q.tcell = c; q.work = 0; }
+      else chooseMove(q, 0, 0, cx, cy - 1);
+      return;
+    }
+    if (!inside) { chooseMove(q, 0, 0, ENTR.x, ENTR.y); return; }
+    for (let k = 0; k < 8; k += 2) {           // at the digging face: take a cell of the plan beside her
+      const c = qi + DX[k] + DY[k] * W;
+      if (plan.frontier.has(c) && grid[c] === SAND) { q.tcell = c; q.work = 0; return; }
+    }
+    descend(q, digMap);
+  } else if (q.stage === 'settle') {           // down to her chamber, then close the door behind her
+    if (nurseMap.d[qi] > 0 && nurseMap.d[qi] < BIG) { descend(q, nurseMap); return; }
+    plug = mouthCells();
+    for (const c of plug) grid[c] = PLUG;
+    sealed = true; mapsDirty = true;
+    q.stage = 'brood'; q.clutch = FIRST_CLUTCH; q.cd = 3 * DAY;      // the first eggs a few days after sealing [guess]
+  } else if (q.stage === 'brood') {            // sealed in, living on her reserves [research: she never forages]
+    q.reserve -= RESERVE_PER_DAY / DAY;
+    if (q.reserve <= 0) { q.dead = true; return; }
+    if (q.clutch > 0 && --q.cd <= 0) {
+      const slot = freeSlotNear(q.x, q.y);
+      if (slot >= 0) {
+        const c = nurseryCells[slot];
+        slotTaken[slot] = 1;
+        eggs.push({ x: c % W, y: (c / W) | 0, st: E_INCUB, slot, timer: HATCH, caste: MINOR, first: true,
+                    doomed: Math.random() < BROOD_LOSS ? (Math.random() * HATCH) | 0 : -1 });   // some of the first brood is lost
+        q.reserve -= RESERVE_PER_EGG; q.clutch--; q.cd = ((0.6 + Math.random() * 0.8) * DAY) | 0;
+      }
+    }
+    for (let k = eggs.length - 1; k >= 0; k--) {
+      const e = eggs[k];
+      if (e.doomed >= 0 && e.timer <= e.doomed) { slotTaken[e.slot] = 0; eggs.splice(k, 1); }
+    }
+    if (!eggs.length && !ants.length && q.clutch === 0 && q.reserve > 15) q.clutch = 3;    // all lost: she tries again while she can
+    if (ants.length && !q.openAt) q.openAt = tick + DAY;                                    // the first worker is out
+    if (q.openAt && tick >= q.openAt) {        // the first workers open the nest and take over [guess: a day after the first emerges]
+      for (const c of plug) grid[c] = TUNNEL;
+      plug = []; sealed = false; mapsDirty = true; q.stage = 'done'; q.cd = DAY;
+    }
+  }
+}
+
+// Larvae have to be fed. The workers eat first; larvae get what is left, and one that goes a week
+// without dies. This is what keeps a colony to the size its food allows. [research: when a colony
+// cannot forage the larvae starve and the workers live on their fat]
+function feedBrood() {
+  const k = TPS / (INCOME_DAYS * DAY);           // a running average of the meals made per day
+  income += (earned * DAY / TPS - income) * k; earned = 0;
+  const spare = stored - ants.length * LARDER;   // the workers' own meals for the coming days are kept back
+  for (let k = eggs.length - 1; k >= 0; k--) {
+    const e = eggs[k], age = HATCH - e.timer;
+    if (e.first || age < EGG_DAYS * DAY || age >= (EGG_DAYS + LARVA_DAYS) * DAY) continue;   // the first brood lives on the queen
+    if (spare - larvaMeal > 0 && stored >= 1) {
+      larvaMeal += EGG_COST / (LARVA_DAYS * DAY) * TPS;
+      e.hungry = 0;
+    } else if ((e.hungry = (e.hungry || 0) + TPS) > LARVA_STARVES) {
+      if (e.st === E_INCUB) slotTaken[e.slot] = 0;
+      for (const a of ants) if (a.egg === e) a.egg = null;
+      eggs.splice(k, 1); broodLost++;
+    }
+  }
+  while (larvaMeal >= 1 && stored >= 1) { larvaMeal--; stored--; }
+}
+
 function queenTick() {
   if (queen.hp < QUEEN_HP && !queen.dead) queen.hp += 0.006;
   if (!queen.dead && ++queen.age > queen.maxAge) queen.dead = true;      // old age, after many years
@@ -974,16 +1135,22 @@ function queenTick() {
     if (e.timer > 0) e.timer--;
     else if (e.st === E_INCUB && ants.length < MAXANTS) {
       slotTaken[e.slot] = 0; spawnAnt(fedFor(), e.x, e.y, e.caste); born++; eggs.splice(k, 1);
+      if (e.first) ants[ants.length - 1].first = true;      // one of the small first workers
     }
   }
   if (queen.dead) return;                     // no more eggs
+  if (queen.stage !== 'done') { foundingTick(); return; }
   const qi = queen.y * W + queen.x;
   if (tick % 8 === 0 && nurseMap.d[qi] > 0 && nurseMap.d[qi] < BIG) descend(queen, nurseMap);   // she walks down to the nursery
   if (queen.cd > 0) queen.cd--;
-  else if (sky.laying && stored >= EGG_COST + RESERVE && eggs.length < nurseryCells.length && eggs.filter(e => e.st !== E_INCUB).length < MAX_LOOSE) {
-    stored -= EGG_COST;
-    eggs.push({ x: queen.x, y: queen.y, st: E_LOOSE, slot: -1, timer: HATCH, caste: newCaste() });
-    queen.cd = layGap(ants.length) | 0;
+  // She lays when there is food to spare. An egg costs nothing yet: the food goes into the larva it becomes.
+  else if (sky.laying && stored >= RESERVE && (ants.length + eggs.length + 1) * 0.5 <= income && eggs.length < nurseryCells.length && eggs.filter(e => e.st !== E_INCUB).length < MAX_LOOSE) {
+    const slot = ants.some(a => taskOf(a) <= T_TRANSFER) ? -1 : freeSlotNear(queen.x, queen.y);   // nobody to carry it: she places it herself
+    if (slot >= 0) { const c = nurseryCells[slot]; slotTaken[slot] = 1; eggs.push({ x: c % W, y: (c / W) | 0, st: E_INCUB, slot, timer: HATCH, caste: newCaste() }); }
+    else eggs.push({ x: queen.x, y: queen.y, st: E_LOOSE, slot: -1, timer: HATCH, caste: newCaste() });
+    // A small colony's queen lays about an egg a day when there is food for it, as she did for her first brood.
+    // [guess: the measured rate above comes from colonies of thirty workers and more]
+    queen.cd = Math.min(layGap(ants.length), (0.6 + Math.random() * 0.8) * DAY) | 0;
   }
 }
 
@@ -1058,6 +1225,7 @@ function simTick() {
   tick++;
   const second = tick % TPS === 0;
   if (second) {
+    ageScale = Math.min(1, Math.max(0.15, ants.length / 30));
     weather();
     if (mapsDirty) computeMaps();
     if (plan.left > 0) findDigging();
@@ -1068,7 +1236,7 @@ function simTick() {
     a.life -= sky.dormant ? 0.2 : 1; a.age++;
     if (a.sleep > 0) a.sleep--; else stepAnt(a);
     if (a.age > a.maxAge) { a.life = 0; a.cause = 'old'; continue; }
-    if (a.age < FORAGE_AGE || a.caste === MAJOR) continue;
+    if (a.age < forageAge() || a.caste === MAJOR) continue;
     // Outside workers are lost at a steady daily rate, to fights, lizards and the heat. The loss is
     // decided here and happens the next time the ant is out on the surface, away from the entrance.
     if (a.doomed) {
@@ -1110,26 +1278,26 @@ function simTick() {
     if (tick % 300 === 0) revealAt(queen.x, queen.y, 11, false);
   }
   seedTick();
-  if (tick % TPS === 7) storeTick();           // once a second
+  if (tick % TPS === 7) { storeTick(); feedBrood(); }   // once a second
   if (falling.length) fallSeeds();
 }
 
 // ───────────────────────── saving ─────────────────────────
 // A colony as plain data: `meta` can be written as text, `arrays` are the big maps.
 // Scent trails are left out: they fade in minutes anyway.
-const SAVE_VERSION = 7;
+const SAVE_VERSION = 10;
 function saveState() {
   const P = plan;
   return {
     meta: {
       version: SAVE_VERSION, savedAt: Date.now(), W, H,
-      n: { tick, stored, delivered, born, died, diedOutside, diedOld, diedHungry, tunnelCells, moundCells, lying, husks, wasted,
+      n: { tick, stored, delivered, born, died, diedOutside, diedOld, diedHungry, tunnelCells, moundCells, lying, husks, wasted, broodLost, larvaMeal, income, earned,
            spiderTimer, spidersKilled, lostToSpiders, alarm },
-      pile, dropped, opening, sprouted, plug, ENTR: { ...ENTR }, queen: { ...queen }, eggs, marks, spiders, corpses,
+      pile, dropped, opening, sprouted, plug, sealed, startKind, ENTR: { ...ENTR }, queen: { ...queen }, eggs, marks, spiders, corpses,
       nurseryCells, nurseryRooms, slotTaken,
       // an ant points at the egg it carries and the patch it is heading for; those are saved as positions in their lists
       ants: ants.map(a => ({ ...a, egg: a.egg ? eggs.indexOf(a.egg) : -1, mark: a.mark ? marks.indexOf(a.mark) : -1 })),
-      plan: { workers: P.workers, depthCm: P.depthCm, areaCm2: P.areaCm2, order: P.order, start: P.start, first: P.first,
+      plan: { workers: P.workers, depthCm: P.depthCm, areaCm2: P.areaCm2, founding: !!P.founding, order: P.order, start: P.start, first: P.first,
               chambers: P.chambers.map(ch => ({ z: ch.z, role: ch.role, cells: ch.cells, dug: ch.dug, niche: ch.niche })) },
       cfg: { spiders: cfg.spiders, fog: cfg.fog, show: cfg.show, paused: cfg.paused },
     },
@@ -1146,9 +1314,9 @@ function loadState(s) {
     if (!A[name] || A[name].length !== into.length) throw new Error('a saved map has the wrong size');
   }
   grid.set(A.grid); food.set(A.food); tint.set(A.tint); band.set(A.band); explored.set(A.explored); surf.set(A.surf); ground.set(A.ground);
-  ({ tick, stored, delivered, born, died, diedOutside, diedOld, diedHungry, tunnelCells, moundCells, lying, husks, wasted,
+  ({ tick, stored, delivered, born, died, diedOutside, diedOld, diedHungry, tunnelCells, moundCells, lying, husks, wasted, broodLost, larvaMeal, income, earned,
      spiderTimer, spidersKilled, lostToSpiders, alarm } = d.n);
-  pile = d.pile; dropped = d.dropped; opening = d.opening; sprouted = d.sprouted; plug = d.plug;
+  pile = d.pile; dropped = d.dropped; opening = d.opening; sprouted = d.sprouted; plug = d.plug; sealed = d.sealed; startKind = d.startKind;
   Object.assign(ENTR, d.ENTR); Object.assign(queen, d.queen);
   eggs = d.eggs; marks = d.marks; spiders = d.spiders; corpses = d.corpses;
   nurseryCells = d.nurseryCells; nurseryRooms = d.nurseryRooms; slotTaken = d.slotTaken;

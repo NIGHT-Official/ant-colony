@@ -187,6 +187,7 @@ function antColour(a) {
 const css = ([r, g, b], k = 1) => `rgb(${Math.min(255, r * k) | 0},${Math.min(255, g * k) | 0},${Math.min(255, b * k) | 0})`;
 const MINOR_BODY = { size: 0.92, head: [0.5, 0.46, false], thorax: [0.7, 0.34], gaster: [0.86, 0.66], stubs: false };
 const MAJOR_BODY = { size: 0.98, head: [0.78, 0.74, true], thorax: [0.74, 0.37], gaster: [0.88, 0.68], stubs: false };
+const FIRST_BODY = { size: 0.76, head: [0.5, 0.46, false], thorax: [0.7, 0.34], gaster: [0.82, 0.6], stubs: false };   // the small first workers
 const QUEEN_BODY = { size: 1.55, head: [0.5, 0.46, false], thorax: [0.92, 0.56], gaster: [1.35, 0.78], stubs: true };
 
 // Draw one ant with its head at world cell (x, y), facing along (dx, dy). `legs`: 0 none (a pupa),
@@ -258,7 +259,6 @@ function drawAnt(x, y, dx, dy, face, body, colour, legs, carried) {
 // Brood, in its three stages [research: egg 8 days, larva 19, pupa 11; harvester ants spin no cocoon]:
 // an egg is a tiny white speck, a larva a cream-coloured curled grub, a pupa a pale, still ant with
 // its legs folded away.
-const EGG_DAYS = 8, LARVA_DAYS = 19;
 const PUPA_BODY = { size: 0.72, head: [0.5, 0.46, false], thorax: [0.7, 0.36], gaster: [0.86, 0.66], stubs: false };
 function drawBrood(e) {
   const z = zoom, cx = (e.x + 0.5 - camX) * z, cy = (e.y + 0.5 - camY) * z, age = HATCH - e.timer;
@@ -281,10 +281,14 @@ function drawAnts() {
     if (!seen(a.x, a.y)) continue;
     const carried = a.carry === SPROUTED ? hex(SPROUTC) : a.mill ? hex(SEEDC[a.mill]) : a.carry ? hex(SEEDC[a.carry]) : a.egg ? '#f2ead2' : a.load ? hex(sandPal[a.shade * 4 + 1]) : null;
     const still = a.state === REST;            // a resting ant stands level on the floor
-    drawAnt(a.x, a.y, still ? a.face : a.dx, still ? 0 : a.dy, a.face, a.caste === MAJOR ? MAJOR_BODY : MINOR_BODY,
+    drawAnt(a.x, a.y, still ? a.face : a.dx, still ? 0 : a.dy, a.face, a.caste === MAJOR ? MAJOR_BODY : a.first ? FIRST_BODY : MINOR_BODY,
             antColour(a), still || a.sleep ? 1 : 2, carried);
   }
-  if (seen(queen.x, queen.y)) drawAnt(queen.x, queen.y, queen.face, 0, queen.face, QUEEN_BODY, queen.dead ? [128, 120, 116] : [150, 62, 36], 1, null);
+  if (seen(queen.x, queen.y)) {
+    const busy = queen.stage === 'dig' || queen.stage === 'settle';     // while founding she walks and carries like a worker
+    drawAnt(queen.x, queen.y, busy ? queen.dx : queen.face, busy ? queen.dy : 0, queen.face, QUEEN_BODY, queen.dead ? [128, 120, 116] : [150, 62, 36],
+            busy && !queen.tcell >= 0 ? 2 : 1, queen.load ? hex(sandPal[queen.shade * 4 + 1]) : null);
+  }
 }
 
 // The minimap: the whole world, one dot for every eight cells, redrawn a few times a second.
@@ -369,10 +373,11 @@ function showSettings() {
   $('bPause').classList.toggle('on', cfg.paused); $('bSpiders').classList.toggle('on', cfg.spiders);
 }
 // A colony may be days or weeks old, so starting over asks first.
-$('bReset').onclick = () => {
-  if (!confirm('Start a new colony? The one you have now will be gone for good.')) return;
-  genWorld(); centerCam(); awayTicks = 0; saveGame();
-};
+$('bReset').onclick = () => $('startDlg').showModal();
+const startNew = kind => { $('startDlg').close(); genWorld(kind); centerCam(); awayTicks = 0; saveGame(); };
+$('startQueen').onclick = () => startNew('queen');
+$('startColony').onclick = () => startNew('colony');
+$('startCancel').onclick = () => $('startDlg').close();
 function toggleHud() {
   const hid = $('hud').classList.toggle('hidden');
   $('bShow').style.display = hid ? 'block' : 'none';
@@ -439,11 +444,15 @@ function hud() {
     `digging <b>${n.dig}</b> carrying seeds down <b>${n.haul}</b> opening seeds <b>${n.mill}</b> carrying brood <b>${n.nurse}</b> resting <b>${n.rest}</b></span>` +
     `<span>nest <b>${plan.left ? Math.floor(100 * dug / plan.order.length) + '% dug' : 'finished'}</b>: ${dug} of ${plan.order.length} cells, planned depth ${Math.round(plan.depthCm)} cm · sand on the disc <b>${moundCells}</b></span>` +
     `<span>${storeApart() ? `waiting in the top chamber <b>${waiting()}</b> · ` : ''}store <b>${inStore()}/${storeCap()}</b> seeds: small <b>${pile[SMALL]}</b>, medium <b>${pile[MEDIUM]}</b>, large <b>${pile[LARGE]}</b>${sprouted ? ` · <span style="color:#8fc45a">sprouted <b>${sprouted}</b></span>` : ''}</span>` +
-    `<span>food ready to eat <b>${stored}</b> meals · seeds brought home <b>${delivered}</b> · husks <b>${husks}</b>${wasted ? ` · large seeds thrown out <b>${wasted}</b>` : ''}</span>` +
-    `<span>brood <b>${eggs.length}</b>${eggs.some(e => e.st !== E_INCUB) ? ` (${eggs.filter(e => e.st !== E_INCUB).length} waiting to be carried)` : ''}</span>` +
+    `<span>food ready to eat <b>${stored}</b> meals, coming in at <b>${income.toFixed(1)}</b> a day · seeds brought home <b>${delivered}</b> · husks <b>${husks}</b>${wasted ? ` · large seeds thrown out <b>${wasted}</b>` : ''}</span>` +
+    `<span>brood <b>${eggs.length}</b>${broodLost ? ` · larvae starved <b>${broodLost}</b>` : ''}${eggs.some(e => e.st !== E_INCUB) ? ` (${eggs.filter(e => e.st !== E_INCUB).length} waiting to be carried)` : ''}</span>` +
     `<span>born <b>${born}</b> · died <b>${died}</b>: outside <b>${diedOutside}</b>, hunger <b>${diedHungry}</b>, old age <b>${diedOld}</b></span>` +
-    (queen.dead ? `<span style="color:#e0645a">the queen is dead: no more eggs</span>` : `<span>queen <b>${Math.floor(queen.age / (365 * DAY))}</b> year${queen.age < 2 * 365 * DAY ? '' : 's'} old</span>`) +
-    (ants.length === 0 && !eggs.length ? `<span style="color:#e0645a">no ants left: press R for a new colony</span>` : '');
+    (queen.dead ? `<span style="color:#e0645a">the queen is dead: no more eggs</span>` : `<span>queen ${queen.age < 365 * DAY ? 'in her first year' : `<b>${Math.floor(queen.age / (365 * DAY))}</b> year${queen.age < 2 * 365 * DAY ? '' : 's'} old`}</span>`) +
+    (queen.stage === 'dig' ? `<span style="color:#8fc45a">the queen is digging her first nest, alone</span>`
+      : queen.stage === 'settle' ? `<span style="color:#8fc45a">the queen is going down to seal herself in</span>`
+      : queen.stage === 'brood' ? `<span style="color:#8fc45a">sealed in: the queen is raising her first workers on her own reserves (${Math.max(0, Math.round(queen.reserve))}% left)</span>`
+      : ants.length === 0 && !eggs.length ? `<span style="color:#e0645a">no ants left: press R for a new colony</span>` : '') +
+    (queen.dead && queen.stage !== 'done' ? `<span style="color:#e0645a"> · she did not make it; most queens do not. Press R to try another.</span>` : '');
 }
 
 // ───────────────────────── saving ─────────────────────────
@@ -536,7 +545,7 @@ function frame(now) {
 }
 
 resize();
-genWorld();
+genWorld(new URLSearchParams(location.search).get('start') === 'colony' ? 'colony' : 'queen');
 try { localStorage.removeItem('ant-colony-save'); } catch (e) { /* the save of the earlier, smaller world; it cannot be read any more */ }
 const begin = () => { showSettings(); setRate(0); setZoom(Number(new URLSearchParams(location.search).get('zoom')) || zoom); centerCam(); lastWall = Date.now(); requestAnimationFrame(frame); };
 if (TRIAL) {                                  // a throwaway colony, run ahead; the saved one is not touched

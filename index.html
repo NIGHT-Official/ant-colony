@@ -25,6 +25,8 @@
   button.on{background:#5a4430;border-color:#8a6a46}
   #hint{opacity:.55;font-size:11px;text-align:center}
   #bShow{position:fixed;right:10px;bottom:10px;display:none;opacity:.85}
+  dialog{background:#1a140e;color:#d8cdb8;border:1px solid #6a5a44;border-radius:8px;max-width:440px}
+  dialog::backdrop{background:#000a}
   #away{position:fixed;top:10px;left:50%;transform:translateX(-50%);max-width:60vw;display:none;padding:6px 14px;text-align:center;
         background:rgba(14,10,7,.92);border:1px solid #6a5a44;border-radius:6px}
 </style>
@@ -54,6 +56,12 @@
 </div>
 <button id="bShow">show panel (H)</button>
 <div id="away" role="status"></div>
+<dialog id="startDlg">
+  <p><b>Start a new colony?</b> The one you have now will be gone for good.</p>
+  <p><button id="startQueen">A lone queen</button> The true beginning: she digs her first nest alone and seals herself in for weeks. Most queens fail.</p>
+  <p><button id="startColony">A young colony</button> Thirty workers two days into moving house, with their nest half dug.</p>
+  <p><button id="startCancel">Keep this colony</button></p>
+</dialog>
 
 <script src="js/sim.js"></script>
 <script src="js/store.js"></script>

@@ -7,11 +7,11 @@ const read = name => fs.readFileSync(path.join(__dirname, '..', 'js', name), 'ut
 const SIM = new vm.Script(read('sim.js'), { filename: 'sim.js' });
 
 // A fresh colony. `run(code)` runs code inside it and gives back the result.
-function newColony() {
+function newColony(kind = 'queen') {
   const context = vm.createContext({ console, Math, Date, JSON, Map, Set, Object, Array,
     Uint8Array, Float32Array, Int16Array, Int32Array, Uint32Array });
   SIM.runInContext(context);
-  vm.runInContext('genWorld()', context);
+  vm.runInContext(`genWorld('${kind}')`, context);
   return { context, run: code => vm.runInContext(code, context) };
 }
 // The saving code (js/store.js), for checking that packing a save loses nothing.
