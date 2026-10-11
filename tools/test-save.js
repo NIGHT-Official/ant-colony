@@ -14,7 +14,7 @@ const check = (ok, what) => { if (!ok) { failures++; console.log('  FAILED: ' + 
 const PICTURE = `JSON.stringify({
   maps: [grid, food, tint, band, explored, surf, ground].map(m => { let h = 0; for (let i = 0; i < m.length; i++) h = (h * 31 + m[i]) | 0; return h; }),
   n: [tick, stored, delivered, born, died, diedOutside, diedOld, diedHungry, tunnelCells, moundCells, lying, husks, wasted, spidersKilled, lostToSpiders],
-  pile, dropped, opening, plug, date: dateText(), queen, ENTR, eggs, spiders, marks, corpses, nurseryCells, nurseryRooms, slotTaken, storeCells, top: topCells.length,
+  pile, dropped, opening, sprouted, plug, date: dateText(), queen, ENTR, eggs, spiders, marks, corpses, nurseryCells, nurseryRooms, slotTaken, storeCells, top: topCells.length,
   plan: [plan.order.length, plan.left, plan.first, plan.chambers.map(ch => [ch.role, ch.cells.length, ch.dug.length])],
   ants: ants.map(a => [a.x, a.y, a.caste, a.state, a.life, a.age, a.maxAge, a.doomed, a.carry, a.load, a.shade, a.dig,
                        a.egg ? eggs.indexOf(a.egg) : -1, a.mark ? marks.indexOf(a.mark) : -1]),
@@ -54,8 +54,8 @@ const PICTURE = `JSON.stringify({
 
   // Rubbish, or a save from another version, must be refused, not half loaded.
   const c = newColony();
-  for (const bad of ['null', '({})', '({ meta: { version: 99 }, arrays: {} })', '({ meta: { version: 6, W: 10, H: 10 }, arrays: {} })',
-                     '({ meta: { version: 6, W, H }, arrays: { grid: new Uint8Array(5) } })']) {
+  for (const bad of ['null', '({})', '({ meta: { version: 99 }, arrays: {} })', '({ meta: { version: 7, W: 10, H: 10 }, arrays: {} })',
+                     '({ meta: { version: 7, W, H }, arrays: { grid: new Uint8Array(5) } })']) {
     let refused = false;
     try { c.run(`loadState(${bad})`); } catch (e) { refused = true; }
     check(refused, 'accepted a bad save: ' + bad);

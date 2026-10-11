@@ -105,6 +105,11 @@ const SEED_MEALS = [0, 1, 2, 5];
 const OPEN_PER_DAY = [0, 0.268, 0.153, 0];
 // Large seeds sprout with the seasons, and a sprouted seed is soft and is eaten at once: see weather().
 const SEED_MIX = [0, 0.65, 0.10, 0.25];   // what falls: each patch is one kind [guess]
+// Opening a seed is work. Seeds come due at the rate above; an ant then has to sit at the heap and
+// grind one open. Majors do most of it and are quicker. [research: majors raise the rate for small
+// and medium seeds; the minutes are a guess]
+const MILL_MAJOR = 1.5 * MIN, MILL_MINOR = 4 * MIN;
+const SPROUTED = 4;           // what an ant carries when it takes a sprouted seed to the brood
 const LARGE_SHARE = 0.5;      // large seeds may take this much of the store's room [research: about half the seeds by number, 70% by weight]
 // Seeds fall onto the surface by themselves, in small patches. [guess for the amounts]
 const SEED_PATCHES_PER_DAY = 34, SEED_PATCH_MIN = 3, SEED_PATCH_MAX = 8;
@@ -131,6 +136,7 @@ let ants = [], eggs = [], marks = [], spiders = [], corpses = [];
 let stored = 0;                            // meals ready to eat
 let pile = [0, 0, 0, 0];                   // unopened seeds in the store, by kind
 let dropped = [0, 0, 0, 0];                // seeds left in the top chamber by foragers, waiting to be carried down
+let sprouted = 0;                          // large seeds in the store that have sprouted and can be fed to the brood
 let opening = [0, 0, 0, 0];                // parts of a seed opened so far, by kind
 let husks = 0, wasted = 0;                 // seed coats thrown out; large seeds brought home with no room for them
 let delivered = 0, born = 0, died = 0, diedOutside = 0, diedOld = 0, diedHungry = 0;
@@ -150,7 +156,8 @@ const waiting = () => dropped[SMALL] + dropped[MEDIUM] + dropped[LARGE];    // s
 const storeApart = () => storeCells !== topCells;                           // is there a store chamber yet?
 // The store's room is in two parts: one for large seeds, which only wait to sprout, and one for
 // everything the colony can eat soon. A full shelf of large seeds must not stop the foraging.
-const largeRoom = () => Math.floor(storeCells.length * LARGE_SHARE) - pile[LARGE] - dropped[LARGE];
+const largeRoom = () => Math.floor(storeCells.length * LARGE_SHARE) - pile[LARGE] - dropped[LARGE] - sprouted;
+const due = k => opening[k] >= 1 && pile[k] > 0;                            // is a seed of this kind ready to be opened?
 const foodRoom = () => storeCells.length - Math.floor(storeCells.length * LARGE_SHARE)
                        - stored - pile[SMALL] - pile[MEDIUM] - dropped[SMALL] - dropped[MEDIUM];
 
@@ -430,7 +437,7 @@ function genWorld() {
   scentS[HOME].fill(0); scentS[FOOD].fill(0);
   for (const m of [exitMap, topMap, midMap, nurseMap, digMap, eggMap, spiderMap]) { m.d.fill(BIG); m.n = 0; }
   tick = 0; ants = []; eggs = []; marks = []; spiders = []; corpses = []; falling = [];
-  stored = 20; pile = [0, 0, 0, 0]; dropped = [0, 0, 0, 0]; opening = [0, 0, 0, 0]; husks = 0; wasted = 0;   // [research: one young colony held 20 seeds]
+  stored = 20; pile = [0, 0, 0, 0]; dropped = [0, 0, 0, 0]; sprouted = 0; opening = [0, 0, 0, 0]; husks = 0; wasted = 0;   // [research: one young colony held 20 seeds]
   delivered = born = died = diedOutside = diedOld = diedHungry = 0;
   tunnelCells = moundCells = lying = 0;
   spiderTimer = DAY; spidersKilled = lostToSpiders = 0; alarm = 0;
@@ -472,7 +479,7 @@ function genWorld() {
 }
 
 // ───────────────────────── ants ─────────────────────────
-const FORAGE = 0, RETURN = 1, REST = 2, DIGGO = 3, HAUL = 4, DUMP = 5, FETCH = 6, CARRYEGG = 7,
+const FORAGE = 0, RETURN = 1, REST = 2, DIGGO = 3, HAUL = 4, DUMP = 5, FETCH = 6, CARRYEGG = 7, MILL = 9, FEED = 11,
       EXPLORE = 8, PATROL = 10, DEFEND = 12;
 
 function spawnAnt(life = fedFor(), x, y, caste = MINOR, age = 0) {
@@ -485,7 +492,7 @@ function spawnAnt(life = fedFor(), x, y, caste = MINOR, age = 0) {
     x, y, px: -1, py: -1, dx: DX[d], dy: DY[d], face: 1, vert: false, vface: 1,
     state: REST, timer: (Math.random() * 2 * MIN) | 0, sleep: 0,
     caste, life, age, maxAge: oldAge(),
-    carry: 0, hauled: false, load: 0, shade: 0, egg: null, mark: null,
+    carry: 0, hauled: false, mill: 0, load: 0, shade: 0, egg: null, mark: null,
     stepsHome: 0, stepsFood: 0, hx: 1, post: 0,
     dig: Math.random(),                    // whether it is one of the diggers: see wantsToDig()
     work: 0, tcell: -1, dropX: 0,
@@ -610,6 +617,12 @@ function stepAnt(a) {
       }
       if (a.timer > 0) break;
       a.sleep = 0;
+      // work in the store: majors open seeds whenever any are due; younger minors help now and then,
+      // and take sprouted seeds down to the brood [research]
+      if (a.life > HUNGRY && task !== T_FORAGER) {
+        if ((due(SMALL) || due(MEDIUM)) && Math.random() < (task === T_MAJOR ? 0.9 : 0.15)) { a.state = MILL; a.timer = 30 * MIN; a.mill = 0; break; }
+        if (sprouted > 0 && task !== T_MAJOR && Math.random() < 0.5) { a.state = FEED; a.timer = 30 * MIN; break; }
+      }
       if (plan.left > 0 && sky.digging && a.life > HUNGRY && wantsToDig(a) && Math.random() < 0.7) {
         a.state = DIGGO; a.timer = 30 * MIN; a.tcell = -1; a.work = 0;
       } else if (task === T_FORAGER && sky.outside) {   // only the oldest workers leave the nest, and only in working hours [research]
@@ -659,6 +672,7 @@ function stepAnt(a) {
         chooseMove(a, HOME, 0, ENTR.x, ENTR.y);
         break;
       }
+      if (a.carry === SPROUTED) { a.carry = 0; sprouted++; }
       if (a.carry) {                         // seeds are dropped in the top chamber [research]
         if (topMap.d[i] <= 1) {
           const kind = a.carry;
@@ -747,6 +761,37 @@ function stepAnt(a) {
       break;
     }
 
+    case MILL: {                              // sit at the seed heap and grind a seed open
+      if (--a.timer <= 0 || !inside) { unmill(a); goHome(a); return; }
+      if (!a.mill) {
+        if (midMap.d[i] !== 0) { if (!descend(a, midMap)) goHome(a); break; }
+        const kind = due(MEDIUM) && (!due(SMALL) || Math.random() < 0.3) ? MEDIUM : due(SMALL) ? SMALL : 0;
+        if (!kind) { goHome(a); return; }
+        opening[kind]--; pile[kind]--; a.mill = kind; a.work = 0;
+        break;
+      }
+      const need = a.caste === MAJOR ? MILL_MAJOR : MILL_MINOR, nap = Math.min(TPS, need - a.work);
+      a.work += nap; a.sleep = nap - 1; a.timer -= nap;
+      if (a.work >= need) {                   // open: the kernel is food, the husk is rubbish
+        stored += SEED_MEALS[a.mill]; husks++; a.mill = 0; a.work = 0;
+        if (!(due(SMALL) || due(MEDIUM)) || Math.random() < 0.25) goHome(a);
+      }
+      break;
+    }
+
+    case FEED: {                              // take a sprouted seed from the store down to the brood
+      if (--a.timer <= 0 || !inside) { if (a.carry === SPROUTED) { a.carry = 0; sprouted++; } goHome(a); return; }
+      if (a.carry !== SPROUTED) {
+        if (sprouted <= 0) { goHome(a); return; }
+        if (midMap.d[i] === 0) { sprouted--; a.carry = SPROUTED; }
+        else if (!descend(a, midMap)) goHome(a);
+      } else if (nurseMap.d[i] === 0) {       // fed to the larvae [research: sprouted seeds go to the brood]
+        a.carry = 0; stored += SEED_MEALS[LARGE]; husks++;
+        if (sprouted <= 0 || Math.random() < 0.3) goHome(a);
+      } else if (!descend(a, nurseMap)) { a.carry = 0; sprouted++; goHome(a); }
+      break;
+    }
+
     case DUMP: {                              // carry the pellet up and out onto the sand disc
       if (--a.timer <= 0) { a.load = 0; goHome(a); return; }
       if (inside) {
@@ -801,6 +846,9 @@ function stepAnt(a) {
     }
   }
 }
+
+// a seed half opened goes back on the heap
+function unmill(a) { if (a.mill) { pile[a.mill]++; opening[a.mill]++; a.mill = 0; a.work = 0; } }
 
 // carrier died, gave up or got lost: the egg lies loose where it is
 function dropEgg(a) {
@@ -976,19 +1024,14 @@ function fallSeeds() {
     else { falling[k] = falling[falling.length - 1]; falling.pop(); }       // at rest (or picked up)
   }
 }
-// In the store: workers open the small and medium seeds bit by bit, and a few large ones sprout.
-// Either way the seed becomes meals and leaves a husk.
+// In the store, once a second: small and medium seeds come due for opening at the measured rates,
+// and large seeds sprout with the season. Ants do the opening and the carrying (MILL and FEED).
 function storeTick() {
-  // With its usual share of majors a colony opens seeds at the measured rate; with none, at half of it.
-  // [research: majors raise the rate for small and medium seeds; the half is a guess]
-  let majors = 0;
-  for (const a of ants) majors += a.caste;
-  const mill = 0.5 + 0.5 * Math.min(1, majors / Math.max(1, ants.length) / MAJOR_SHARE);
-  for (let k = SMALL; k <= LARGE; k++) {
-    if (!pile[k]) continue;
-    opening[k] += pile[k] * (k === LARGE ? sky.sprout : OPEN_PER_DAY[k] * mill) / DAY * TPS;
-    while (opening[k] >= 1 && pile[k] > 0) { opening[k]--; pile[k]--; stored += SEED_MEALS[k]; husks++; }
+  for (const k of [SMALL, MEDIUM]) {
+    opening[k] = Math.min(pile[k], opening[k] + pile[k] * OPEN_PER_DAY[k] / DAY * TPS);
   }
+  opening[LARGE] += pile[LARGE] * sky.sprout / DAY * TPS;
+  while (opening[LARGE] >= 1 && pile[LARGE] > 0) { opening[LARGE]--; pile[LARGE]--; sprouted++; }
 }
 
 // ───────────────────────── one tick ─────────────────────────
@@ -1031,7 +1074,8 @@ function simTick() {
   let n = 0;
   for (const a of ants) {
     if (a.life > 0) { ants[n++] = a; continue; }
-    died++; dropEgg(a); plan.claims.delete(a.tcell);
+    died++; dropEgg(a); unmill(a); plan.claims.delete(a.tcell);
+    if (a.carry === SPROUTED) sprouted++;
     if (a.cause === 'outside') diedOutside++; else if (a.cause === 'old') diedOld++; else if (a.cause !== 'spider') diedHungry++;
     corpses.push({ x: a.x, y: a.y, t: tick });
   }
@@ -1054,7 +1098,7 @@ function simTick() {
 // ───────────────────────── saving ─────────────────────────
 // A colony as plain data: `meta` can be written as text, `arrays` are the big maps.
 // Scent trails are left out: they fade in minutes anyway.
-const SAVE_VERSION = 6;
+const SAVE_VERSION = 7;
 function saveState() {
   const P = plan;
   return {
@@ -1062,7 +1106,7 @@ function saveState() {
       version: SAVE_VERSION, savedAt: Date.now(), W, H,
       n: { tick, stored, delivered, born, died, diedOutside, diedOld, diedHungry, tunnelCells, moundCells, lying, husks, wasted,
            spiderTimer, spidersKilled, lostToSpiders, alarm },
-      pile, dropped, opening, plug, ENTR: { ...ENTR }, queen: { ...queen }, eggs, marks, spiders, corpses,
+      pile, dropped, opening, sprouted, plug, ENTR: { ...ENTR }, queen: { ...queen }, eggs, marks, spiders, corpses,
       nurseryCells, nurseryRooms, slotTaken,
       // an ant points at the egg it carries and the patch it is heading for; those are saved as positions in their lists
       ants: ants.map(a => ({ ...a, egg: a.egg ? eggs.indexOf(a.egg) : -1, mark: a.mark ? marks.indexOf(a.mark) : -1 })),
@@ -1085,7 +1129,7 @@ function loadState(s) {
   grid.set(A.grid); food.set(A.food); tint.set(A.tint); band.set(A.band); explored.set(A.explored); surf.set(A.surf); ground.set(A.ground);
   ({ tick, stored, delivered, born, died, diedOutside, diedOld, diedHungry, tunnelCells, moundCells, lying, husks, wasted,
      spiderTimer, spidersKilled, lostToSpiders, alarm } = d.n);
-  pile = d.pile; dropped = d.dropped; opening = d.opening; plug = d.plug;
+  pile = d.pile; dropped = d.dropped; opening = d.opening; sprouted = d.sprouted; plug = d.plug;
   Object.assign(ENTR, d.ENTR); Object.assign(queen, d.queen);
   eggs = d.eggs; marks = d.marks; spiders = d.spiders; corpses = d.corpses;
   nurseryCells = d.nurseryCells; nurseryRooms = d.nurseryRooms; slotTaken = d.slotTaken;
@@ -1097,6 +1141,7 @@ function loadState(s) {
   ants = d.ants.map(o => {
     const a = { ...o, egg: o.egg >= 0 ? eggs[o.egg] : null, mark: o.mark >= 0 ? marks[o.mark] : null, tcell: -1, work: 0, rx: -1, ry: -1 };
     if (a.state === CARRYEGG && !a.egg) a.state = RETURN;        // caught half way through something: start again
+    if (a.mill) { pile[a.mill]++; opening[a.mill]++; a.mill = 0; }
     return a;
   });
   Object.assign(cfg, d.cfg);

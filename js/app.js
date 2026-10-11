@@ -56,7 +56,7 @@ const STOREC = rgb(232, 220, 186);          // opened seed, ready to eat: pale c
 const SEEDC = [0, rgb(206, 170, 104), rgb(158, 110, 62), rgb(96, 58, 38)];   // small: tan, medium: brown, large: dark brown
 const seedShade = (c, i) => { const k = 0.86 + ((i * 7919) % 5) * 0.06;     // no two seeds quite the same
   return rgb(Math.min(255, (c & 255) * k) | 0, Math.min(255, ((c >> 8) & 255) * k) | 0, Math.min(255, ((c >> 16) & 255) * k) | 0); };
-const CHARCOAL = rgb(52, 46, 44);
+const CHARCOAL = rgb(52, 46, 44), SPROUTC = rgb(112, 168, 70), HUSKC = rgb(214, 196, 150);
 const EGGC = rgb(244, 240, 226);
 const CORPSEC = rgb(84, 76, 70);
 const FLAG = rgb(236, 72, 153), FOGC = rgb(7, 5, 9);
@@ -106,7 +106,7 @@ function draw() {
       let c;
       if (t === AIR) c = food[i] ? seedShade(SEEDC[food[i]], i) : skyNow[y];
       // the sand disc carries flecks of charcoal [research; the ants collecting it is not modelled, the flecks are only drawn]
-      else if (t === SAND) c = y < surf[x] ? ((i * 2654435761 >>> 0) % 11 === 0 ? CHARCOAL : sandPal[band[i] * 4 + tint[i]])
+      else if (t === SAND) c = y < surf[x] ? ((Math.imul(i, 2654435761) >>> 19) % 13 === 0 ? CHARCOAL : sandPal[band[i] * 4 + tint[i]])
                              : (y === surf[x]) ? GRASS : sandPal[band[i] * 4 + tint[i]];
       else if (t === PLUG) c = sandPal[tint[i]];                    // the entrance, filled in for the night
       else c = nurserySet[i] ? nurPal[tint[i]] : tunPal[tint[i]];
@@ -128,9 +128,14 @@ function draw() {
     for (const kind of [LARGE, MEDIUM, SMALL]) for (let n = 0; n < dropped[kind] && k < dropCells.length; n++) { const c = dropCells[k++]; put(c % W, (c / W) | 0, seedShade(SEEDC[kind], c)); }
   }
   let cell = 0;
-  for (const [count, colour] of [[pile[LARGE], SEEDC[LARGE]], [pile[MEDIUM], SEEDC[MEDIUM]], [pile[SMALL], SEEDC[SMALL]], [stored, STOREC]])
+  for (const [count, colour] of [[sprouted, SPROUTC], [pile[LARGE], SEEDC[LARGE]], [pile[MEDIUM], SEEDC[MEDIUM]], [pile[SMALL], SEEDC[SMALL]], [stored, STOREC]])
     for (let k = 0; k < count && cell < heapCells.length; k++) { const c = heapCells[cell++]; put(c % W, (c / W) | 0, seedShade(colour, c)); }
   if (zoom < 3) for (const e of eggs) if (e.st !== E_CARRIED) put(e.x, e.y, EGGC);     // closer in, brood is drawn with the ants
+  // the husk heap by the entrance [research: husks go to their own rubbish pile on the mound; carrying them out is not modelled]
+  for (let k = 0, n = Math.min(260, husks >> 2); k < n; k++) {
+    const col = k % 26, x = ENTR.x - 34 - col + ((k / 26 | 0) & 1), y = ground[x] - 1 - (k / 26 | 0);
+    if (Math.abs(col - 13) <= 13 - (k / 26 | 0) * 2) put(x, y, HUSKC);
+  }
   for (const m of marks) for (let k = 5; k <= 9; k++) put(m.x, m.y - k, FLAG);      // a flag over each flagged patch
   for (const d of corpses) put(d.x, d.y, CORPSEC);
   for (const sp of spiders) {                  // only where an ant can see it
@@ -269,7 +274,7 @@ function drawAnts() {
   if (zoom >= 3) for (const e of eggs) if (e.st !== E_CARRIED && seen(e.x, e.y)) drawBrood(e);
   for (const a of ants) {
     if (!seen(a.x, a.y)) continue;
-    const carried = a.carry ? hex(SEEDC[a.carry]) : a.egg ? '#f2ead2' : a.load ? hex(sandPal[a.shade * 4 + 1]) : null;
+    const carried = a.carry === SPROUTED ? hex(SPROUTC) : a.mill ? hex(SEEDC[a.mill]) : a.carry ? hex(SEEDC[a.carry]) : a.egg ? '#f2ead2' : a.load ? hex(sandPal[a.shade * 4 + 1]) : null;
     const still = a.state === REST;            // a resting ant stands level on the floor
     drawAnt(a.x, a.y, still ? a.face : a.dx, still ? 0 : a.dy, a.face, a.caste === MAJOR ? MAJOR_BODY : MINOR_BODY,
             antColour(a), still || a.sleep ? 1 : 2, carried);
@@ -406,7 +411,7 @@ function hud() {
     `<small>${lying} seeds lying outside</small></div></div>` +
     (cfg.spiders || spiders.length ? `<div class="card"><i style="background:#2e163a"></i><div><b>Spiders</b> ${spiders.length} <small>about</small><br>` +
     `<small>killed ${spidersKilled} · ants lost ${lostToSpiders}</small></div></div>` : '');
-  const n = { explore: 0, forage: 0, home: 0, rest: 0, dig: 0, nurse: 0, patrol: 0, haul: 0 };
+  const n = { explore: 0, forage: 0, home: 0, rest: 0, dig: 0, nurse: 0, patrol: 0, haul: 0, mill: 0 };
   for (const a of ants) {
     switch (a.state) {
       case EXPLORE: n.explore++; break;
@@ -415,7 +420,8 @@ function hud() {
       case REST: n.rest++; break;
       case PATROL: case DEFEND: n.patrol++; break;
       case FETCH: case CARRYEGG: n.nurse++; break;
-      case HAUL: n.haul++; break;
+      case HAUL: case FEED: n.haul++; break;
+      case MILL: n.mill++; break;
       default: n.dig++;                        // digging, or carrying a pellet out
     }
   }
@@ -425,9 +431,9 @@ function hud() {
     `<span>sand surface <b>${Math.round(sky.surface)} °C</b> · ${sky.outside ? 'working hours' : `<span style="color:#e0b45a">${sky.why}</span>`}${sky.laying ? '' : ' · the queen is not laying'}</span>` +
     `<span>${saveProblem ? `<span style="color:#e0645a">not saved: ${saveProblem}</span>` : lastSave ? `saved (${Math.max(1, Math.round(savedBytes / 1024))} KB)` : 'not saved yet'}</span>` +
     `<span>ants <b>${ants.length}</b>, right now: on patrol <b>${n.explore}</b> foraging <b>${n.forage}</b> on guard <b>${n.patrol}</b> going home <b>${n.home}</b> ` +
-    `digging <b>${n.dig}</b> carrying seeds down <b>${n.haul}</b> carrying brood <b>${n.nurse}</b> resting <b>${n.rest}</b></span>` +
+    `digging <b>${n.dig}</b> carrying seeds down <b>${n.haul}</b> opening seeds <b>${n.mill}</b> carrying brood <b>${n.nurse}</b> resting <b>${n.rest}</b></span>` +
     `<span>nest <b>${plan.left ? Math.floor(100 * dug / plan.order.length) + '% dug' : 'finished'}</b>: ${dug} of ${plan.order.length} cells, planned depth ${Math.round(plan.depthCm)} cm · sand on the disc <b>${moundCells}</b></span>` +
-    `<span>${storeApart() ? `waiting in the top chamber <b>${waiting()}</b> · ` : ''}store <b>${inStore()}/${storeCells.length}</b>: ready to eat <b>${stored}</b> · unopened small <b>${pile[SMALL]}</b>, medium <b>${pile[MEDIUM]}</b>, large <b>${pile[LARGE]}</b></span>` +
+    `<span>${storeApart() ? `waiting in the top chamber <b>${waiting()}</b> · ` : ''}store <b>${inStore()}/${storeCells.length}</b>: ready to eat <b>${stored}</b> · unopened small <b>${pile[SMALL]}</b>, medium <b>${pile[MEDIUM]}</b>, large <b>${pile[LARGE]}</b>${sprouted ? ` · <span style="color:#8fc45a">sprouted <b>${sprouted}</b></span>` : ''}</span>` +
     `<span>seeds brought home <b>${delivered}</b> · husks <b>${husks}</b>${wasted ? ` · large seeds thrown out <b>${wasted}</b>` : ''}</span>` +
     `<span>brood <b>${eggs.length}</b>${eggs.some(e => e.st !== E_INCUB) ? ` (${eggs.filter(e => e.st !== E_INCUB).length} waiting to be carried)` : ''}</span>` +
     `<span>born <b>${born}</b> · died <b>${died}</b>: outside <b>${diedOutside}</b>, hunger <b>${diedHungry}</b>, old age <b>${diedOld}</b></span>` +
