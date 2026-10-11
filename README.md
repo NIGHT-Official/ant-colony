@@ -1,15 +1,17 @@
 # Ant Colony
 
 A digital ant colony that lives on your computer, seen from the side like an ant farm. It is modelled on
-the Florida harvester ant (*Pogonomyrmex badius*) and runs in **real time**: one second on the clock is one
-second for the ants. One pixel is 1.6 mm, which is one pellet of sand, so a worker is four pixels long and
-you can watch the nest being carved out a pellet at a time.
+the Florida harvester ant (*Pogonomyrmex badius*). **Ants move in real time:** a second is a second, and a
+foraging trip takes its true minutes. **Their calendar runs four times faster than ours,** so a day lasts six
+hours and a whole year of colony life passes in each of our seasons. One pixel is 1.6 mm, which is one pellet
+of sand, so a worker is four pixels long and you can watch the nest being carved out a pellet at a time.
 
 Open `index.html` in a browser. Nothing needs installing. (For the fullscreen button, serve the folder
 instead: `python -m http.server`.)
 
 The colony is saved in the browser by itself. Close the page and come back later, and it has lived through
-the time you were away (up to three days; longer absences are cut short and the page says so).
+the time you were away (up to three of our days, which is twelve of theirs; longer absences are cut short and
+the page says so).
 
 ## Controls
 
@@ -29,20 +31,26 @@ the time you were away (up to three days; longer absences are cut short and the 
 
 If a fast-forward is more than the computer can do, the panel shows the rate it is really reaching.
 
-**Trying things out:** `index.html?trial=24` starts a throwaway colony already 24 hours old. It is never
+**Trying things out:** `index.html?trial=24` starts a throwaway colony already 24 of our hours (four of its
+days) old; add `&zoom=8` for a close look. It is never
 saved and leaves your real colony alone.
 
 ## How it works
 
 - **Scale.** One cell is 1.6 mm. The world is 3.2 m wide and 1.25 m deep; a worker walks about 3 cm a second.
-- **The start** is a young colony that has just moved in: 30 workers of mixed ages, 20 brood, 20 seeds, and a
-  nest only one day into its digging.
+- **The calendar.** A colony begins at eight in the morning on 1 June. The sun, the temperature of the sand and
+  the season follow from the date (a simple model of north Florida), and the ants keep to them as in the
+  research: work outside only by day, ending an hour and a half before sunset, on sand between 25 and 45 °C;
+  the entrance filled in for the night; the queen laying from April to September; nobody outside from
+  December to February, when the colony eats little; large seeds sprouting in spring and late autumn.
+- **The start** is a young colony two days into moving house: 30 workers of mixed ages, each where its job
+  puts it, 20 brood and the queen at the bottom, 20 meals, and a nest whose shaft and first niches are dug.
 - **The nest** is dug to a plan set by the number of workers: a shaft that zigzags down (a spiral, seen
   from the side) with flat chambers on the outside of each bend, large and close together near the top,
   small and far apart below. For 30 workers that is 31 cm deep with four chambers.
   - Diggers bite one pellet loose, carry it up, and drop it on the sand disc around the entrance. Sand is
     coloured by the depth it came from, so the disc shows how deep the digging has reached.
-  - Mostly the older workers dig. The whole nest takes about four days.
+  - Mostly the older workers dig, by day. The whole nest takes about four days; the part left at the start, about one.
   - The nest does not grow afterwards. A real colony gets a bigger nest by moving, and nest moves are not
     modelled yet.
 - **Rooms get their use from who lives there:** outside workers rest in the top chamber, where seeds are
@@ -54,17 +62,20 @@ saved and leaves your real colony alone.
   are lost at 3.35% a day, out on the surface; one that escapes that dies of old age after a little over a
   year. The dead lie where they fell for a day. The queen lives 15 to 30 years.
 - **Seeds** fall onto the surface in small patches, each patch one kind. A forager carries one seed home per trip.
-  - **Small** (straw-coloured, 1 mm or less): workers open about a quarter of the pile a day. One meal each.
-  - **Medium** (amber, 1 to 1.4 mm): opened more slowly. Two meals each.
-  - **Large** (dark red-brown, 1.4 mm and up): cannot be opened. They sit in the store until they sprout,
-    then are eaten at once. Five meals each. They may fill up to 70% of the store.
+  - **Small** (tan, 1 mm or less): about a quarter of the pile is opened a day. One meal each.
+  - **Medium** (brown, 1 to 1.4 mm): opened more slowly. Two meals each.
+  - **Large** (dark brown, 1.4 mm and up): cannot be opened. They sit in the store until they sprout, then go
+    to the brood. Five meals each. They take at most half of the store.
 - **Castes and jobs.** A caste is the body an ant is born with: most workers are **minors**, and about 7% are
   large-headed **majors**. A job is what a worker does at its age, and it only ever moves up the nest:
   **callow** (pale, new) → **brood care** deep down → **transfer worker** in the middle, carrying seeds down
   to the store and sand up → **forager** at the top and outside. A forager's trips are mostly for seeds, with
   some patrols (looking for unflagged patches) and spells on guard. Majors stay in the store and speed up the
   opening of seeds. There are no soldiers: defence falls to the older workers at the surface.
-- **Seeds are handed on.** Foragers leave seeds in the top chamber and transfer workers carry them down.
+- **Seeds are handed on.** Foragers leave seeds in the top chamber and transfer workers carry them down to
+  the store, where they lie in mixed heaps.
+- **Opening a seed is work.** Small and medium seeds come due at the measured rates; an ant then sits at the
+  heap and grinds one open, majors mostly. A large seed that sprouts turns green and is carried to the brood.
 - **The ants are drawn as ants:** a head, a narrow thorax carrying the legs, a two-knob waist and a round
   gaster, rusty red-brown like the real species, pale when new. Majors have a big square head; the queen is
   the largest, with a long gaster and wing stubs.
@@ -105,12 +116,16 @@ The research is in `docs/research/`, with its sources. In `js/sim.js` every numb
 | Seed kinds and opening rates | see above | Research |
 | Scent trail | half gone in 12 minutes | Research: fades in 15–30 minutes |
 | Food per ant | one meal every 2 days | **Guess.** Nobody has measured it |
-| Sprouting of large seeds | 1% of the pile a day | **Guess.** Really seasonal |
+| Sprouting of large seeds | up to 5% of the pile a day near 17.5 °C, almost none in summer | Research for the timing (spring and late autumn); the size is a **guess** |
+| Large seeds in the store | at most half of it | Research: about half the seeds by number |
+| Calendar speed | 4 times ours | **Our choice,** so that the seasons can be watched |
+| Weather | a simple model of north Florida | **Guess.** What the ants do about it is research |
+| Store capacity | two seeds to a cell, heaps filling half a chamber | **Guess** |
 | Seeds falling | about 190 a day across the map | **Guess** |
 | Rest between jobs | 2–10 minutes | **Guess** |
 
 **Not modelled yet,** although the research covers it: nest moves (so the nest never grows), sand passed up
-in a relay, sand left underground, the entrance closed at night, day and night, winter and the seasons, the
+in a relay, sand left underground, the
 long-lived autumn workers, midden workers, foraging set off by returning patrollers, insect food, the
 husk heap, carrying the dead away, and the mating flight.
 
@@ -127,7 +142,8 @@ husk heap, carrying the dead away, and the mating flight.
 Both need Node.js.
 
 - `node tools/measure.js` runs colonies without a browser and reports how they fare when left alone
-  (2 colonies for 5 simulated days, about 3 minutes; `node tools/measure.js 4 14` for 4 colonies and 14 days).
+  (2 colonies for 5 days of their calendar; `node tools/measure.js 2 60` for 60 days, about five minutes).
+  A run stops itself after 14 minutes.
 - `node tools/test-save.js` checks that a colony can be saved and put back exactly, and carries on afterwards.
 
 ### Measurements
@@ -143,3 +159,9 @@ Both need Node.js.
 - **2026-10-10, with castes and jobs by age** (2 colonies, 5 simulated days): nests dug in 4.2 days each;
   29 and 30 ants at the end, 2 and 1 lost outside, none starved, about 44 seeds carried home a day. It ran
   about 3,300 times faster than real time, slower than before because more ants are out at once.
+- **2026-10-11, with the calendar, seasons and the store reworked** (2 colonies, 60 calendar days, June and
+  July): 51 and 49 ants at the end from 30, 45 and 42 born, 24 and 23 lost outside, none starved, 44 and 36
+  brood growing. One colony had nothing ready to eat for 221 of the 1,440 hours, so food is tight. About 300
+  large seeds per colony were thrown out for lack of room. Autumn, winter and spring have not been run.
+  Three earlier runs that day each caught a fault: a store jammed with large seeds, brood that could not be
+  carried between two nursery chambers, and a store made too small.

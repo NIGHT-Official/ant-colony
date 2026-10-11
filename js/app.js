@@ -127,9 +127,14 @@ function draw() {
     let k = 0;
     for (const kind of [LARGE, MEDIUM, SMALL]) for (let n = 0; n < dropped[kind] && k < dropCells.length; n++) { const c = dropCells[k++]; put(c % W, (c / W) | 0, seedShade(SEEDC[kind], c)); }
   }
-  let cell = 0;
-  for (const [count, colour] of [[sprouted, SPROUTC], [pile[LARGE], SEEDC[LARGE]], [pile[MEDIUM], SEEDC[MEDIUM]], [pile[SMALL], SEEDC[SMALL]], [stored, STOREC]])
-    for (let k = 0; k < count && cell < heapCells.length; k++) { const c = heapCells[cell++]; put(c % W, (c / W) | 0, seedShade(colour, c)); }
+  // The store: one mixed heap, the kinds scattered through it in their true numbers. A sprouted
+  // seed shows green. (Opened seed is eaten or fed to the brood; it is not drawn.)
+  const total = inStore(), shown = Math.ceil(total / SEEDS_PER_CELL);
+  for (let k = 0; k < shown && k < heapCells.length; k++) {
+    const c = heapCells[k], r = (Math.imul(c, 2654435761) >>> 8) % 1000 / 1000 * total;
+    const colour = r < sprouted ? SPROUTC : r < sprouted + pile[LARGE] ? SEEDC[LARGE] : r < sprouted + pile[LARGE] + pile[MEDIUM] ? SEEDC[MEDIUM] : SEEDC[SMALL];
+    put(c % W, (c / W) | 0, colour === SPROUTC ? colour : seedShade(colour, c));
+  }
   if (zoom < 3) for (const e of eggs) if (e.st !== E_CARRIED) put(e.x, e.y, EGGC);     // closer in, brood is drawn with the ants
   // the husk heap by the entrance [research: husks go to their own rubbish pile on the mound; carrying them out is not modelled]
   for (let k = 0, n = Math.min(260, husks >> 2); k < n; k++) {
@@ -433,8 +438,8 @@ function hud() {
     `<span>ants <b>${ants.length}</b>, right now: on patrol <b>${n.explore}</b> foraging <b>${n.forage}</b> on guard <b>${n.patrol}</b> going home <b>${n.home}</b> ` +
     `digging <b>${n.dig}</b> carrying seeds down <b>${n.haul}</b> opening seeds <b>${n.mill}</b> carrying brood <b>${n.nurse}</b> resting <b>${n.rest}</b></span>` +
     `<span>nest <b>${plan.left ? Math.floor(100 * dug / plan.order.length) + '% dug' : 'finished'}</b>: ${dug} of ${plan.order.length} cells, planned depth ${Math.round(plan.depthCm)} cm · sand on the disc <b>${moundCells}</b></span>` +
-    `<span>${storeApart() ? `waiting in the top chamber <b>${waiting()}</b> · ` : ''}store <b>${inStore()}/${storeCells.length}</b>: ready to eat <b>${stored}</b> · unopened small <b>${pile[SMALL]}</b>, medium <b>${pile[MEDIUM]}</b>, large <b>${pile[LARGE]}</b>${sprouted ? ` · <span style="color:#8fc45a">sprouted <b>${sprouted}</b></span>` : ''}</span>` +
-    `<span>seeds brought home <b>${delivered}</b> · husks <b>${husks}</b>${wasted ? ` · large seeds thrown out <b>${wasted}</b>` : ''}</span>` +
+    `<span>${storeApart() ? `waiting in the top chamber <b>${waiting()}</b> · ` : ''}store <b>${inStore()}/${storeCap()}</b> seeds: small <b>${pile[SMALL]}</b>, medium <b>${pile[MEDIUM]}</b>, large <b>${pile[LARGE]}</b>${sprouted ? ` · <span style="color:#8fc45a">sprouted <b>${sprouted}</b></span>` : ''}</span>` +
+    `<span>food ready to eat <b>${stored}</b> meals · seeds brought home <b>${delivered}</b> · husks <b>${husks}</b>${wasted ? ` · large seeds thrown out <b>${wasted}</b>` : ''}</span>` +
     `<span>brood <b>${eggs.length}</b>${eggs.some(e => e.st !== E_INCUB) ? ` (${eggs.filter(e => e.st !== E_INCUB).length} waiting to be carried)` : ''}</span>` +
     `<span>born <b>${born}</b> · died <b>${died}</b>: outside <b>${diedOutside}</b>, hunger <b>${diedHungry}</b>, old age <b>${diedOld}</b></span>` +
     (queen.dead ? `<span style="color:#e0645a">the queen is dead: no more eggs</span>` : `<span>queen <b>${Math.floor(queen.age / (365 * DAY))}</b> year${queen.age < 2 * 365 * DAY ? '' : 's'} old</span>`) +

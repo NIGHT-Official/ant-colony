@@ -110,6 +110,9 @@ const SEED_MIX = [0, 0.65, 0.10, 0.25];   // what falls: each patch is one kind 
 // and medium seeds; the minutes are a guess]
 const MILL_MAJOR = 1.5 * MIN, MILL_MINOR = 4 * MIN;
 const SPROUTED = 4;           // what an ant carries when it takes a sprouted seed to the brood
+// Seeds lie in heaps on the floor that fill about half of a store chamber, two seeds to a cell.
+// [guess: a small seed is about 1 mm across and a cell is 1.6 mm]
+const STORE_FILL = 0.5, SEEDS_PER_CELL = 2;
 const LARGE_SHARE = 0.5;      // large seeds may take this much of the store's room [research: about half the seeds by number, 70% by weight]
 // Seeds fall onto the surface by themselves, in small patches. [guess for the amounts]
 const SEED_PATCHES_PER_DAY = 34, SEED_PATCH_MIN = 3, SEED_PATCH_MAX = 8;
@@ -151,15 +154,16 @@ let heapCells = [], dropCells = [];            // the store's and the top chambe
 let nurseryRooms = '';                     // which chambers the nursery is in, as text, to notice a change
 const nurserySet = new Uint8Array(N);      // 1 = nursery floor
 const E_LOOSE = 0, E_CARRIED = 2, E_INCUB = 3;
-const inStore = () => stored + pile[SMALL] + pile[MEDIUM] + pile[LARGE];   // everything taking up room in the store
+const inStore = () => pile[SMALL] + pile[MEDIUM] + pile[LARGE] + sprouted;     // seeds lying in the store
+const storeCap = () => Math.floor(storeCells.length * STORE_FILL * SEEDS_PER_CELL);   // how many it has room for
 const waiting = () => dropped[SMALL] + dropped[MEDIUM] + dropped[LARGE];    // seeds in the top chamber
 const storeApart = () => storeCells !== topCells;                           // is there a store chamber yet?
 // The store's room is in two parts: one for large seeds, which only wait to sprout, and one for
 // everything the colony can eat soon. A full shelf of large seeds must not stop the foraging.
-const largeRoom = () => Math.floor(storeCells.length * LARGE_SHARE) - pile[LARGE] - dropped[LARGE] - sprouted;
+const largeRoom = () => Math.floor(storeCap() * LARGE_SHARE) - pile[LARGE] - dropped[LARGE] - sprouted;
 const due = k => opening[k] >= 1 && pile[k] > 0;                            // is a seed of this kind ready to be opened?
-const foodRoom = () => storeCells.length - Math.floor(storeCells.length * LARGE_SHARE)
-                       - stored - pile[SMALL] - pile[MEDIUM] - dropped[SMALL] - dropped[MEDIUM];
+const foodRoom = () => storeCap() - Math.floor(storeCap() * LARGE_SHARE)
+                       - pile[SMALL] - pile[MEDIUM] - dropped[SMALL] - dropped[MEDIUM];
 
 // spiders: a leftover from the game this started as, not part of the research; off unless switched on
 const SPIDER_HP = 12, SPIDER_LIFE = 30 * MIN, QUEEN_HP = 60, QUEEN_MORTAL = true;
@@ -266,6 +270,7 @@ const nurseMap = newMap();   // to the nursery: brood, queen and the young
 const digMap = newMap();     // to the places being dug
 const eggMap = newMap();     // to eggs waiting to be carried
 const spiderMap = newMap();  // to a spider that has got inside
+const roomMaps = [];         // to each nursery chamber on its own, made when first needed
 
 function bfs(map, srcs) {
   const d = map.d, q = map.q;
@@ -342,23 +347,25 @@ function makePlan(workers) {
         if (h === 0 && end < 2) continue;
         add(cells, bx + side * s, floor - h);
       }
-    const role = k === 0 ? 'top' : z / depthCm >= 0.55 ? 'nursery' : 'store';
+    // Brood in the lower half, seeds in the chambers between it and the top one. [research: in a nest
+    // 2 m deep, seeds lie 20–80 cm down and brood below about 80 cm; the same proportions are used here]
+    const role = k === 0 ? 'top' : z / depthCm >= 0.5 ? 'nursery' : 'store';
     chambers.push({ z, role, cells, dug: [], niche: Math.ceil(cells.length / 3) });
     px = bx; py = by;
   });
 
-  // The order of digging: down the shaft with a small niche at each bend, widening the chambers
-  // already started along the way, so that deepening and widening go on together [research].
+  // The order of digging: first the shaft all the way down with a small niche at each bend, then
+  // every chamber widened together, a little at a time [research: the top is dug first, then
+  // deepening and widening go on at once]. A colony is met two days into its move, when the shaft
+  // and the niches exist: the brood, the queen and the seeds have just been carried in.
   const order = [];
   const push = list => { for (const c of list) order.push(c); };
-  push(segs[0]); push(chambers[0].cells);
+  chambers.forEach((ch, k) => { push(segs[k]); push(ch.cells.slice(0, ch.niche)); });
   const start = order.length;                      // everything before this is dug at the start
-  for (let k = 1; k < chambers.length; k++) {
-    push(segs[k]); push(chambers[k].cells.slice(0, chambers[k].niche));
-    const rest = chambers[k].cells.slice(chambers[k].niche), half = rest.length >> 1;
-    if (k > 1) push(chambers[k - 1].cells.slice(chambers[k - 1].niche + ((chambers[k - 1].cells.length - chambers[k - 1].niche) >> 1)));
-    push(rest.slice(0, half));
-    if (k === chambers.length - 1) push(rest.slice(half));
+  const rests = chambers.map(ch => ch.cells.slice(ch.niche));
+  for (let at = 0, more = true; more; at += 12) {  // twelve cells of each chamber in turn
+    more = false;
+    for (const rest of rests) if (at < rest.length) { push(rest.slice(at, at + 12)); more = true; }
   }
   const cellRoom = new Map();
   chambers.forEach((ch, k) => { for (const c of ch.cells) cellRoom.set(c, k); });
@@ -376,7 +383,7 @@ function setTunnel(c) {
 // Decide what each part of the nest is used for, from what has been dug so far. Nobody plans
 // this: the young live deep and the old near the top, and the rooms follow [research].
 function assignRooms() {
-  const rooms = plan.chambers, ready = ch => ch.dug.length >= 24;
+  const rooms = plan.chambers, ready = ch => ch.dug.length >= 12;
   topCells = rooms[0].dug;
   let nurs = rooms.filter(ch => ch.role === 'nursery' && ready(ch));
   if (!nurs.length) {                                   // not dug yet: the deepest room there is
@@ -386,7 +393,9 @@ function assignRooms() {
   storeCells = stores.length ? [].concat(...stores.map(ch => ch.dug)) : rooms[0].dug;
   // Seeds lie in heaps on the floor: fill each room from its floor up, from the middle outward.
   const heap = cells => { let lo = 1e9, hi = -1e9; for (const c of cells) { const x = c % W; if (x < lo) lo = x; if (x > hi) hi = x; }
-    const mid = (lo + hi) / 2; return cells.slice().sort((a, b) => ((b / W) | 0) + Math.abs(b % W - mid) * 0.22 - ((a / W) | 0) - Math.abs(a % W - mid) * 0.22); };
+    let floor = 0; for (const c of cells) floor = Math.max(floor, (c / W) | 0);
+    const cost = c => (floor - ((c / W) | 0)) + 1.6 * Math.abs(Math.sin((c % W - lo) * 0.33));   // height above the floor, lower between mounds
+    return cells.slice().sort((a, b) => cost(a) - cost(b)); };
   heapCells = stores.length ? [].concat(...stores.map(ch => heap(ch.dug))) : heap(rooms[0].dug);
   dropCells = heap(rooms[0].dug);
   const names = nurs.map(ch => rooms.indexOf(ch)).join(',');
@@ -409,6 +418,7 @@ function computeMaps() {
   bfs(topMap, topCells);
   bfs(midMap, storeCells);
   bfs(nurseMap, nurseryCells);
+  plan.chambers.forEach((ch, k) => { if (ch.role === 'nursery' && ch.dug.length) bfs(roomMaps[k] || (roomMaps[k] = newMap()), ch.dug); });
   mapsDirty = false;
 }
 
@@ -462,7 +472,7 @@ function genWorld() {
   weather();
   computeMaps();
 
-  const home = topCells;
+  const home = nurseryCells;                           // the queen is at the bottom of the nest [research]
   const floor = Math.max(...home.map(c => (c / W) | 0));
   const onFloor = home.filter(c => ((c / W) | 0) === floor);
   const q = onFloor[onFloor.length >> 1];
@@ -483,8 +493,9 @@ const FORAGE = 0, RETURN = 1, REST = 2, DIGGO = 3, HAUL = 4, DUMP = 5, FETCH = 6
       EXPLORE = 8, PATROL = 10, DEFEND = 12;
 
 function spawnAnt(life = fedFor(), x, y, caste = MINOR, age = 0) {
-  if (x === undefined) {
-    const c = topCells[(Math.random() * topCells.length) | 0];
+  if (x === undefined) {                    // in the part of the nest where an ant of its age and caste lives
+    const cells = caste === MAJOR ? storeCells : age < NURSE_UNTIL ? nurseryCells : age < FORAGE_AGE ? storeCells : topCells;
+    const c = cells[(Math.random() * cells.length) | 0];
     x = c % W; y = (c / W) | 0;
   }
   const d = (Math.random() * 8) | 0;
@@ -821,7 +832,14 @@ function stepAnt(a) {
       if (--a.timer <= 0 || !inside) { goHome(a); return; }
       const e = eggs.find(e => e.st === E_LOOSE && Math.abs(e.x - a.x) <= 1 && Math.abs(e.y - a.y) <= 1);
       if (e) {
-        const slot = slotTaken.indexOf(0);
+        // the nearest free place for it, in this chamber if there is one
+        let slot = -1, best = 1e9;
+        const here = plan.cellRoom.get(i);
+        for (let k = 0; k < nurseryCells.length; k++) {
+          if (slotTaken[k]) continue;
+          const c = nurseryCells[k], d = Math.abs(c % W - a.x) + Math.abs(((c / W) | 0) - a.y) + (plan.cellRoom.get(c) === here ? 0 : 500);
+          if (d < best) { best = d; slot = k; }
+        }
         if (slot < 0) { goHome(a); return; }                     // the nursery is full
         slotTaken[slot] = 1; e.slot = slot; e.st = E_CARRIED; a.egg = e; a.state = CARRYEGG; a.timer = 20 * MIN;
         return;
@@ -835,13 +853,14 @@ function stepAnt(a) {
       if (!e) { goHome(a); return; }
       e.x = a.x; e.y = a.y;
       if (--a.timer <= 0) { dropEgg(a); goHome(a); return; }
-      if (nurserySet[i]) {
+      const room = plan.cellRoom.get(nurseryCells[e.slot]);     // the chamber its place is in
+      if (plan.cellRoom.get(i) === room) {
         const sc = nurseryCells[e.slot], sx = sc % W, sy = (sc / W) | 0;
         if (Math.abs(a.x - sx) <= 1 && Math.abs(a.y - sy) <= 1) {
           e.x = sx; e.y = sy; e.st = E_INCUB; a.egg = null; goHome(a); return;
         }
         chooseMove(a, 0, 0, sx, sy);
-      } else if (!descend(a, nurseMap)) { dropEgg(a); goHome(a); }
+      } else if (!roomMaps[room] || !descend(a, roomMaps[room])) { dropEgg(a); goHome(a); }
       break;
     }
   }
@@ -1141,7 +1160,6 @@ function loadState(s) {
   ants = d.ants.map(o => {
     const a = { ...o, egg: o.egg >= 0 ? eggs[o.egg] : null, mark: o.mark >= 0 ? marks[o.mark] : null, tcell: -1, work: 0, rx: -1, ry: -1 };
     if (a.state === CARRYEGG && !a.egg) a.state = RETURN;        // caught half way through something: start again
-    if (a.mill) { pile[a.mill]++; opening[a.mill]++; a.mill = 0; }
     return a;
   });
   Object.assign(cfg, d.cfg);

@@ -23,7 +23,7 @@ function run() {
   const HOUR = c.run('DAY / 24');        // an hour of the colony's calendar
   const hour = c.run(`(function () { for (let k = 0; k < ${HOUR}; k++) simTick();
     return [ants.length, stored, eggs.length, plan.left - 0, moundCells, born, died, diedOutside, diedHungry, diedOld, lostToSpiders,
-            delivered, lying, pile[1], pile[2], pile[3], husks, wasted, storeCells.length,
+            delivered, lying, pile[1], pile[2], pile[3], husks, wasted, storeCap(),
             ants.reduce((k, a) => k + (taskOf(a) === T_FORAGER), 0), eggs.filter(e => e.st !== E_INCUB).length, queen.dead]; })`);
   const start = { ants: c.run('ants.length'), cells: c.run('plan.order.length'), depth: c.run('Math.round(plan.depthCm)'), toDig: c.run('plan.left') };
   const perDay = [];
@@ -54,7 +54,7 @@ console.log(`   ants: started with ${rows[0].start.ants}; at the end ${S(0)}; fe
 console.log(`   brood ${S(2)} (waiting to be carried: ${S(20)}); born ${S(5)}`);
 console.log(`   died ${S(6)}: outside ${S(7)}, hunger ${S(8)}, old age ${S(9)}, spiders ${S(10)}; queen dead: ${S(21)}`);
 console.log(`   seeds carried home: ${S(11)} (${(rows.reduce((n, r) => n + r.s[11], 0) / rows.length / DAYS).toFixed(1)} a day); lying outside ${S(12)}`);
-console.log(`   store at the end: meals ready ${S(1)}; unopened small ${S(13)}, medium ${S(14)}, large ${S(15)}; room for ${S(18)}`);
+console.log(`   at the end: meals ready ${S(1)}; in the store small ${S(13)}, medium ${S(14)}, large ${S(15)}; room for ${S(18)}`);
 console.log(`   husks ${S(16)}; large seeds thrown out for lack of room ${S(17)}; hours with nothing ready to eat ${list(r => r.hungryHours)}`);
 console.log(`   ants day by day, first colony: ${rows[0].perDay.join(' ')}`);
 console.log(`\nSpeed: ${Math.round(ticksRun / (msRun / 1000)).toLocaleString('en')} ticks a second, ` +
