@@ -65,7 +65,13 @@ saved and leaves your real colony alone.
   some patrols (looking for unflagged patches) and spells on guard. Majors stay in the store and speed up the
   opening of seeds. There are no soldiers: defence falls to the older workers at the surface.
 - **Seeds are handed on.** Foragers leave seeds in the top chamber and transfer workers carry them down.
-- **The ants are drawn as ants,** rusty red like the real species, pale when new and darker with age.
+- **The ants are drawn as ants:** a head, a narrow thorax carrying the legs, a two-knob waist and a round
+  gaster, rusty red-brown like the real species, pale when new. Majors have a big square head; the queen is
+  the largest, with a long gaster and wing stubs.
+- **Brood** shows its stage: an egg is a white speck, a larva a cream curled grub that grows, a pupa a pale,
+  still ant with no legs showing.
+- **Seeds lie in heaps** on the chamber floors, tan, brown and dark brown. The sand disc is drawn with flecks
+  of charcoal, as real ones have; the ants collecting charcoal is not modelled.
 - **Fog:** unexplored is black, explored is dim, and ants light up what they see. Above ground an ant sees a
   tall strip of ground and sky. The entrance and every flagged seed patch stay lit.
 - **Spiders** are a leftover from the game this started as, not part of the research. They are off by default.

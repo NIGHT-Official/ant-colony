@@ -138,6 +138,7 @@ const ENTR = { x: W >> 1, y: 0 };          // the nest entrance
 const queen = { x: 0, y: 0, px: -1, py: -1, dx: 1, dy: 0, face: 1, vert: false, vface: 1, cd: 0, hp: 0, dead: false, age: 0, maxAge: 0 };
 let plan = null;                           // the nest being dug: see makePlan()
 let nurseryCells = [], slotTaken = [], storeCells = [], topCells = [];
+let heapCells = [], dropCells = [];            // the store's and the top chamber's cells from the floor up, for drawing the seed piles
 let nurseryRooms = '';                     // which chambers the nursery is in, as text, to notice a change
 const nurserySet = new Uint8Array(N);      // 1 = nursery floor
 const E_LOOSE = 0, E_CARRIED = 2, E_INCUB = 3;
@@ -257,8 +258,9 @@ function makePlan(workers) {
     const floor = by + 2, cells = [];
     for (let s = 0; s <= width + 2; s++)               // outward from the bend, column by column
       for (let h = 0; h < CHAMBER_H; h++) {
-        const far = s >= width + 1, near = s < 1;       // a slightly domed ceiling: the top corners stay sand
-        if (h === CHAMBER_H - 1 && (far || near)) continue;
+        const end = width + 2 - s;                      // a flat floor, a low domed ceiling and a rounded far end
+        if (h >= CHAMBER_H - (s < 1 ? 1 : 0) - (end < 3 ? (3 - end) * 2 : end < 6 ? 1 : 0)) continue;
+        if (h === 0 && end < 2) continue;
         add(cells, bx + side * s, floor - h);
       }
     const role = k === 0 ? 'top' : z / depthCm >= 0.55 ? 'nursery' : 'store';
@@ -303,6 +305,11 @@ function assignRooms() {
   }
   const stores = rooms.filter(ch => ch.role === 'store' && ready(ch));
   storeCells = stores.length ? [].concat(...stores.map(ch => ch.dug)) : rooms[0].dug;
+  // Seeds lie in heaps on the floor: fill each room from its floor up, from the middle outward.
+  const heap = cells => { let lo = 1e9, hi = -1e9; for (const c of cells) { const x = c % W; if (x < lo) lo = x; if (x > hi) hi = x; }
+    const mid = (lo + hi) / 2; return cells.slice().sort((a, b) => ((b / W) | 0) + Math.abs(b % W - mid) * 0.22 - ((a / W) | 0) - Math.abs(a % W - mid) * 0.22); };
+  heapCells = stores.length ? [].concat(...stores.map(ch => heap(ch.dug))) : heap(rooms[0].dug);
+  dropCells = heap(rooms[0].dug);
   const names = nurs.map(ch => rooms.indexOf(ch)).join(',');
   if (names !== nurseryRooms) {
     // The nursery has moved deeper: the brood is where it was and has to be carried down.

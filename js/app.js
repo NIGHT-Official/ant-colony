@@ -52,9 +52,12 @@ for (let b = 0; b < 16; b++) for (let n = 0; n < 4; n++) {
 const tunPal = [0, 1, 2, 3].map(n => rgb(58 + n * 2, 44 + n * 2, 32 + n * 2));
 const nurPal = [0, 1, 2, 3].map(n => rgb(88 + n * 2, 60 + n * 2, 48 + n * 2));
 const GRASS = rgb(126, 148, 74);
-const STOREC = rgb(250, 232, 150);          // opened seed, ready to eat
-const SEEDC = [0, rgb(242, 201, 76), rgb(214, 138, 52), rgb(134, 62, 38)];   // small: straw, medium: amber, large: dark red-brown
-const EGGC = rgb(244, 240, 226), EGGSOON = rgb(255, 226, 140);
+const STOREC = rgb(232, 220, 186);          // opened seed, ready to eat: pale crumbs
+const SEEDC = [0, rgb(206, 170, 104), rgb(158, 110, 62), rgb(96, 58, 38)];   // small: tan, medium: brown, large: dark brown
+const seedShade = (c, i) => { const k = 0.86 + ((i * 7919) % 5) * 0.06;     // no two seeds quite the same
+  return rgb(Math.min(255, (c & 255) * k) | 0, Math.min(255, ((c >> 8) & 255) * k) | 0, Math.min(255, ((c >> 16) & 255) * k) | 0); };
+const CHARCOAL = rgb(52, 46, 44);
+const EGGC = rgb(244, 240, 226);
 const CORPSEC = rgb(84, 76, 70);
 const FLAG = rgb(236, 72, 153), FOGC = rgb(7, 5, 9);
 const SPIDERC = rgb(46, 22, 58), SPIDERHIT = rgb(210, 190, 230), SPIDEREYE = rgb(235, 50, 50);
@@ -84,8 +87,10 @@ function draw() {
     for (let vx = 0; vx < vw; vx++) {
       const x = x0 + vx, i = row + x, t = grid[i];
       let c;
-      if (t === AIR) c = food[i] ? SEEDC[food[i]] : skyPal[y];
-      else if (t === SAND) c = (y === surf[x]) ? GRASS : sandPal[band[i] * 4 + tint[i]];
+      if (t === AIR) c = food[i] ? seedShade(SEEDC[food[i]], i) : skyPal[y];
+      // the sand disc carries flecks of charcoal [research; the ants collecting it is not modelled, the flecks are only drawn]
+      else if (t === SAND) c = y < surf[x] ? ((i * 2654435761 >>> 0) % 11 === 0 ? CHARCOAL : sandPal[band[i] * 4 + tint[i]])
+                             : (y === surf[x]) ? GRASS : sandPal[band[i] * 4 + tint[i]];
       else c = nurserySet[i] ? nurPal[tint[i]] : tunPal[tint[i]];
       if (cfg.show) {                         // scent trails: blue toward home, green toward seeds
         const h = scent(HOME, i), f = scent(FOOD, i);
@@ -102,12 +107,12 @@ function draw() {
   // the store fills from the first cell on: large seeds, then medium, small, and the opened food
   if (storeApart()) {                         // seeds waiting in the top chamber to be carried down
     let k = 0;
-    for (const kind of [LARGE, MEDIUM, SMALL]) for (let n = 0; n < dropped[kind] && k < topCells.length; n++) { const c = topCells[k++]; put(c % W, (c / W) | 0, SEEDC[kind]); }
+    for (const kind of [LARGE, MEDIUM, SMALL]) for (let n = 0; n < dropped[kind] && k < dropCells.length; n++) { const c = dropCells[k++]; put(c % W, (c / W) | 0, seedShade(SEEDC[kind], c)); }
   }
   let cell = 0;
   for (const [count, colour] of [[pile[LARGE], SEEDC[LARGE]], [pile[MEDIUM], SEEDC[MEDIUM]], [pile[SMALL], SEEDC[SMALL]], [stored, STOREC]])
-    for (let k = 0; k < count && cell < storeCells.length; k++) { const c = storeCells[cell++]; put(c % W, (c / W) | 0, colour); }
-  for (const e of eggs) if (e.st !== E_CARRIED) put(e.x, e.y, (e.timer < HOUR && (tick >> 3) & 1) ? EGGSOON : EGGC);
+    for (let k = 0; k < count && cell < heapCells.length; k++) { const c = heapCells[cell++]; put(c % W, (c / W) | 0, seedShade(colour, c)); }
+  if (zoom < 3) for (const e of eggs) if (e.st !== E_CARRIED) put(e.x, e.y, EGGC);     // closer in, brood is drawn with the ants
   for (const m of marks) for (let k = 5; k <= 9; k++) put(m.x, m.y - k, FLAG);      // a flag over each flagged patch
   for (const d of corpses) put(d.x, d.y, CORPSEC);
   for (const sp of spiders) {                  // only where an ant can see it
@@ -136,25 +141,34 @@ function draw() {
 }
 
 // ───────────────────────── the ants themselves ─────────────────────────
-// Ants are drawn as ants, on top of the pixel world: head, thorax, a narrow waist and a gaster, six
-// legs seen as three from the side, and a pair of elbowed antennae. A minor worker is about four
-// cells long (6.4 mm), a major has a much larger head, and the queen is nearly twice the size.
-// The Florida harvester ant is rusty red. A new adult is pale amber and darkens over its first days.
+// Ants are drawn as ants, on top of the pixel world. A harvester ant has three clear parts: a head,
+// a narrow thorax that carries all six legs, and a big round gaster, joined by a waist of two small
+// knobs (the mark of its family). The antennae bend like an elbow.
+//   minor worker: the standard ant, about four cells long (6.4 mm)
+//   major worker: only a little longer, with a big square head
+//   queen:        the largest, with a bulky thorax, a long gaster and stubs where her wings were
+// The Florida harvester ant is rusty red to reddish brown: the head and gaster darker, the thorax
+// and legs lighter. A new adult is pale amber and darkens over its first days.
 const mix = (a, b, t) => a + (b - a) * t;
 function antColour(a) {
   const t = Math.min(1, a.age / CALLOW), old = Math.min(1, a.age / (2 * FORAGE_AGE));
-  let r = mix(214, mix(168, 132, old), t), g = mix(160, mix(58, 40, old), t), b = mix(96, mix(28, 22, old), t);
+  let r = mix(216, mix(170, 142, old), t), g = mix(170, mix(80, 62, old), t), b = mix(110, mix(44, 34, old), t);
   if (a.life < HUNGRY) { r = mix(r, 150, 0.6); g = mix(g, 150, 0.6); b = mix(b, 145, 0.6); }   // a hungry ant goes grey
-  return [r | 0, g | 0, b | 0];
+  return [r, g, b];
 }
-const css = ([r, g, b], k = 1) => `rgb(${r * k | 0},${g * k | 0},${b * k | 0})`;
+const css = ([r, g, b], k = 1) => `rgb(${Math.min(255, r * k) | 0},${Math.min(255, g * k) | 0},${Math.min(255, b * k) | 0})`;
+const MINOR_BODY = { size: 0.92, head: [0.5, 0.46, false], thorax: [0.7, 0.34], gaster: [0.86, 0.66], stubs: false };
+const MAJOR_BODY = { size: 0.98, head: [0.78, 0.74, true], thorax: [0.74, 0.37], gaster: [0.88, 0.68], stubs: false };
+const QUEEN_BODY = { size: 1.55, head: [0.5, 0.46, false], thorax: [0.92, 0.56], gaster: [1.35, 0.78], stubs: true };
 
-// Draw one ant with its head at world cell (x, y), facing the way it last moved.
-function drawAnt(x, y, dx, dy, face, size, headSize, colour, moving, carried) {
+// Draw one ant with its head at world cell (x, y), facing along (dx, dy). `legs`: 0 none (a pupa),
+// 1 standing, 2 walking.
+function drawAnt(x, y, dx, dy, face, body, colour, legs, carried) {
   const z = zoom, hx = (x + 0.5 - camX) * z, hy = (y + 0.5 - camY) * z;
   if (z < 3) {                                 // zoomed right out: a short bar is all there is room for
-    cctx.fillStyle = css(colour);
-    cctx.fillRect(hx - (dx > 0 || (!dx && face > 0) ? 3 * z * size : 0), hy - z / 2, 3 * z * size, z);
+    cctx.fillStyle = css(colour, 0.85);
+    const len = 3.6 * z * body.size;
+    cctx.fillRect(hx - (dx > 0 || (!dx && face > 0) ? len : 0), hy - z / 2, len, z);
     return;
   }
   let ux = dx, uy = dy;
@@ -163,52 +177,86 @@ function drawAnt(x, y, dx, dy, face, size, headSize, colour, moving, carried) {
   // "down" for the legs: the side of the body that points toward the ground
   let nx = -uy, ny = ux;
   if (ny < -0.01 || (Math.abs(ny) <= 0.01 && nx * face < 0)) { nx = -nx; ny = -ny; }
-  const u = size * z, at = t => [hx - ux * t * u, hy - uy * t * u];       // a point t cells back from the head
-  const angle = Math.atan2(uy, ux);
-  const blob = (t, rx, ry, k) => {
-    const [cx, cy] = at(t);
+  const u = body.size * z, angle = Math.atan2(uy, ux);
+  const [hrx, hry, square] = body.head, [trx, try_] = body.thorax, [grx, gry] = body.gaster;
+  // places along the body, in cells back from the front of the head
+  const tHead = hrx, tThorax = 2 * hrx + trx - 0.1, tKnob1 = tThorax + trx + 0.14, tKnob2 = tKnob1 + 0.34, tGaster = tKnob2 + 0.12 + grx;
+  const at = (t, off = 0) => [hx - ux * (t - tHead) * u + nx * off * u, hy - uy * (t - tHead) * u + ny * off * u];
+  const oval = (t, rx, ry, k, off = 0) => {
+    const [cx, cy] = at(t, off);
     cctx.fillStyle = css(colour, k);
     cctx.beginPath(); cctx.ellipse(cx, cy, rx * u, ry * u, angle, 0, 6.2832); cctx.fill();
   };
-  const back = (headSize - 1) * 0.5;           // a bigger head pushes the rest of the body back
-  // legs first, so the body covers where they join
-  cctx.strokeStyle = css(colour, 0.55); cctx.lineWidth = Math.max(1, z * 0.17 * size); cctx.lineCap = 'round';
-  const step = moving ? ((tick >> 2) & 1 ? 0.28 : -0.28) : 0;
+  cctx.lineCap = 'round'; cctx.lineJoin = 'round';
+  cctx.strokeStyle = css(colour, 1.08); cctx.lineWidth = Math.max(1, z * 0.15 * body.size);
   cctx.beginPath();
-  for (let k = 0; k < 3; k++) {
-    const [lx, ly] = at(1.05 + back + k * 0.32), reach = (1 - k) * 0.75 + (k % 2 ? -step : step);   // front leg forward, hind leg back
-    const kx = lx + nx * 0.55 * u + ux * reach * 0.5 * u, ky = ly + ny * 0.55 * u + uy * reach * 0.5 * u;   // the knee
-    cctx.moveTo(lx, ly); cctx.lineTo(kx, ky);
-    cctx.lineTo(lx + nx * 1.15 * u + ux * reach * u, ly + ny * 1.15 * u + uy * reach * u);
+  if (legs) {                                  // six legs, all from the thorax; three show from the side
+    const step = legs === 2 ? ((tick >> 2) & 1 ? 0.26 : -0.26) : 0;
+    for (let k = 0; k < 3; k++) {
+      const [lx, ly] = at(tThorax - trx * 0.55 + k * trx * 0.55), reach = (1 - k) * 0.7 + (k % 2 ? -step : step);   // front leg forward, hind leg back
+      cctx.moveTo(lx, ly);
+      cctx.lineTo(lx + nx * 0.5 * u - ux * reach * 0.45 * u * -1, ly + ny * 0.5 * u - uy * reach * 0.45 * u * -1);        // the knee
+      cctx.lineTo(lx + nx * 1.0 * u + ux * reach * 0.95 * u, ly + ny * 1.0 * u + uy * reach * 0.95 * u);                  // the foot
+    }
+    // antennae: up and forward from the front of the head, then bent like an elbow
+    const [ax, ay] = at(0.12, -hry * 0.3);
+    cctx.moveTo(ax, ay);
+    cctx.lineTo(ax + (ux * 0.5 - nx * 0.55) * u, ay + (uy * 0.5 - ny * 0.55) * u);
+    cctx.lineTo(ax + (ux * 1.1 - nx * 0.15) * u, ay + (uy * 1.1 - ny * 0.15) * u);
   }
-  // antennae: out and up from the front of the head, with an elbow
-  const [ax, ay] = at(-0.25 * headSize);
-  cctx.moveTo(ax, ay);
-  cctx.lineTo(ax + (ux * 0.55 - nx * 0.45) * u, ay + (uy * 0.55 - ny * 0.45) * u);
-  cctx.lineTo(ax + (ux * 1.15 - nx * 0.2) * u, ay + (uy * 1.15 - ny * 0.2) * u);
+  if (body.stubs) {                            // where the queen's wings were
+    for (const t of [tThorax - 0.2, tThorax + 0.25]) { const [sx, sy] = at(t, -try_ * 0.8); cctx.moveTo(sx, sy); cctx.lineTo(sx - (ux * 0.3 + nx * 0.3) * u, sy - (uy * 0.3 + ny * 0.3) * u); }
+  }
   cctx.stroke();
-  blob(2.95 + back, 0.85, 0.6, 0.78);          // gaster, a little darker
-  blob(2.1 + back, 0.24, 0.22, 0.85);          // the waist
-  blob(1.35 + back, 0.72, 0.42, 1);            // thorax
-  blob(0.3, 0.55 * headSize, 0.5 * headSize, 0.92);   // head
+  oval(tGaster, grx, gry, 0.74);               // gaster: darker than the thorax
+  oval(tGaster - grx * 0.15, grx * 0.45, gry * 0.28, 1.25, -gry * 0.42);   // a highlight along its back
+  oval(tKnob1, 0.17, 0.17, 0.9); oval(tKnob2, 0.19, 0.2, 0.85);            // the two knobs of the waist
+  oval(tThorax, trx, try_, 1);                 // thorax: narrow, and the lightest part
+  if (square) {                                // a major's head: big and square
+    const [cx, cy] = at(tHead);
+    cctx.save(); cctx.translate(cx, cy); cctx.rotate(angle);
+    cctx.fillStyle = css(colour, 0.8);
+    cctx.beginPath(); cctx.roundRect(-hrx * u, -hry * u, 2 * hrx * u, 2 * hry * u, hry * u * 0.42); cctx.fill();
+    cctx.restore();
+  } else oval(tHead, hrx, hry, 0.8);           // head: darker too
+  if (z >= 5) { const [ex, ey] = at(tHead - hrx * 0.35, -hry * 0.2); cctx.fillStyle = '#1a0e0a'; cctx.beginPath(); cctx.ellipse(ex, ey, 0.1 * u, 0.1 * u, 0, 0, 6.2832); cctx.fill(); }
   if (carried) {                               // held in the jaws, just in front of the head
-    const [cx, cy] = at(-0.75 * headSize);
+    const [cx, cy] = at(-0.42);
     cctx.fillStyle = carried;
     cctx.beginPath(); cctx.ellipse(cx, cy, 0.5 * z, 0.5 * z, 0, 0, 6.2832); cctx.fill();
   }
 }
 
+// Brood, in its three stages [research: egg 8 days, larva 19, pupa 11; harvester ants spin no cocoon]:
+// an egg is a tiny white speck, a larva a cream-coloured curled grub, a pupa a pale, still ant with
+// its legs folded away.
+const EGG_DAYS = 8, LARVA_DAYS = 19;
+const PUPA_BODY = { size: 0.72, head: [0.5, 0.46, false], thorax: [0.7, 0.36], gaster: [0.86, 0.66], stubs: false };
+function drawBrood(e) {
+  const z = zoom, cx = (e.x + 0.5 - camX) * z, cy = (e.y + 0.5 - camY) * z, age = HATCH - e.timer;
+  if (age < EGG_DAYS * DAY) {
+    cctx.fillStyle = '#f6f3ea';
+    cctx.beginPath(); cctx.ellipse(cx, cy + 0.2 * z, 0.28 * z, 0.2 * z, 0, 0, 6.2832); cctx.fill();
+  } else if (age < (EGG_DAYS + LARVA_DAYS) * DAY) {
+    const grown = (age / DAY - EGG_DAYS) / LARVA_DAYS;       // a larva grows as it is fed
+    cctx.strokeStyle = '#efe2bd'; cctx.lineWidth = (0.42 + 0.3 * grown) * z; cctx.lineCap = 'round';
+    cctx.beginPath(); cctx.arc(cx, cy, (0.3 + 0.3 * grown) * z, 0.6, 4.6); cctx.stroke();
+  } else drawAnt(e.x, e.y, (e.slot & 1) ? 1 : -1, 0, 1, PUPA_BODY, [236, 218, 178], 0, null);
+}
+
 const hex = c => `rgb(${c & 255},${(c >> 8) & 255},${(c >> 16) & 255})`;
 function drawAnts() {
-  const xa = camX - 8, xb = camX + vw + 8, ya = camY - 8, yb = camY + vh + 8;
+  const xa = camX - 10, xb = camX + vw + 10, ya = camY - 10, yb = camY + vh + 10;
+  const seen = (x, y) => x >= xa && x <= xb && y >= ya && y <= yb && (!cfg.fog || vis[y * W + x]);
+  if (zoom >= 3) for (const e of eggs) if (e.st !== E_CARRIED && seen(e.x, e.y)) drawBrood(e);
   for (const a of ants) {
-    if (a.x < xa || a.x > xb || a.y < ya || a.y > yb) continue;
-    const carried = a.carry ? hex(SEEDC[a.carry]) : a.egg ? hex(EGGC) : a.load ? hex(sandPal[a.shade * 4 + 1]) : null;
+    if (!seen(a.x, a.y)) continue;
+    const carried = a.carry ? hex(SEEDC[a.carry]) : a.egg ? '#f2ead2' : a.load ? hex(sandPal[a.shade * 4 + 1]) : null;
     const still = a.state === REST;            // a resting ant stands level on the floor
-    drawAnt(a.x, a.y, still ? a.face : a.dx, still ? 0 : a.dy, a.face, 1, a.caste === MAJOR ? 1.6 : 1, antColour(a), !still && !a.sleep, carried);
+    drawAnt(a.x, a.y, still ? a.face : a.dx, still ? 0 : a.dy, a.face, a.caste === MAJOR ? MAJOR_BODY : MINOR_BODY,
+            antColour(a), still || a.sleep ? 1 : 2, carried);
   }
-  if (queen.x >= xa && queen.x <= xb && queen.y >= ya && queen.y <= yb)
-    drawAnt(queen.x, queen.y, queen.dx, queen.dy, queen.face, 1.7, 1.05, queen.dead ? [120, 112, 110] : [150, 40, 30], false, null);
+  if (seen(queen.x, queen.y)) drawAnt(queen.x, queen.y, queen.face, 0, queen.face, QUEEN_BODY, queen.dead ? [128, 120, 116] : [150, 62, 36], 1, null);
 }
 
 // The minimap: the whole world, one dot for every eight cells, redrawn a few times a second.
